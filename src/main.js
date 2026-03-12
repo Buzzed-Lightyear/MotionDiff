@@ -134,6 +134,15 @@ function handlePlayPause() {
   }
 }
 
+pipeline.onResult = (result) => {
+  if (!loopRunning || !videoLoaded) return;
+  if (result && result.accumulated) {
+    render(currentMode, result.accumulated, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
+  } else if (result && result.currentFrame) {
+    render(currentMode, null, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
+  }
+};
+
 function tick() {
   if (!loopRunning || !videoLoaded) return;
 
@@ -146,12 +155,7 @@ function tick() {
     blurEnabled: controls.state.blurEnabled,
   });
 
-  const result = pipeline.process(videoEl);
-  if (result) {
-    render(currentMode, result.accumulated, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
-  } else {
-    render(currentMode, null, null, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
-  }
+  pipeline.process(videoEl);
 
   scheduleNext();
 }

@@ -1,46 +1,92 @@
-import { CircularBuffer } from '../core/buffer.js';
-import { posyBlend, rawDiff } from '../core/diff.js';
-import { boxBlur } from '../core/blur.js';
-import { accumulate } from '../core/trails.js';
+import PipelineWorker from './pipeline.worker.js?worker';
 
 const PROCESS_WIDTH = 640;
+const FRAME_STORE_CAP = 120;
 
 export class Pipeline {
   constructor() {
-    this.frameBuffer = new CircularBuffer(120);
-    this.trailBuffer = new CircularBuffer(20);
     this._capCanvas = null;
     this._capCtx = null;
     this.width = 0;
     this.height = 0;
 
-    this.frameOffset = 5;
-    this.threshold = 10;
-    this.trailLength = 5;
-    this.channelSpread = 0;
-    this.algorithm = 'posy';
-    this.blurEnabled = false;
+    this._frameStore = new Array(FRAME_STORE_CAP);
+    this._storeHead = -1;
+    this._storeSize = 0;
+
+    this._worker = null;
+    this._workerBusy = false;
+    this._pendingFrame = null;
+
+    this.params = {
+      frameOffset: 5,
+      threshold: 10,
+      trailLength: 5,
+      channelSpread: 0,
+      algorithm: 'posy',
+      blurEnabled: false,
+    };
+
+    this.onResult = null;
   }
 
   init(videoEl, outputCanvasEl) {
     this._capCanvas = document.createElement('canvas');
     this._capCtx = this._capCanvas.getContext('2d', { willReadFrequently: true });
+    this._initWorker();
+  }
+
+  _initWorker() {
+    if (this._worker) this._worker.terminate();
+    this._worker = new PipelineWorker();
+    this._workerBusy = false;
+
+    this._worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type !== 'result') return;
+
+      this._workerBusy = false;
+
+      let accumulated = null;
+      let currentFrame = null;
+
+      if (msg.accumulatedBuffer) {
+        const accArr = new Uint8ClampedArray(msg.accumulatedBuffer);
+        accumulated = new ImageData(accArr, this.width, this.height);
+      }
+
+      if (msg.currentFrameBuffer) {
+        const curArr = new Uint8ClampedArray(msg.currentFrameBuffer);
+        currentFrame = new ImageData(curArr, this.width, this.height);
+      }
+
+      if (this.onResult) {
+        this.onResult({ currentFrame, accumulated });
+      }
+    };
   }
 
   start() {
-    this.frameBuffer.clear();
-    this.trailBuffer.clear();
+    this._frameStore = new Array(FRAME_STORE_CAP);
+    this._storeHead = -1;
+    this._storeSize = 0;
+    if (this._worker) {
+      this._worker.postMessage({ type: 'clear' });
+    }
+    this._workerBusy = false;
   }
 
-  stop() {}
+  stop() {
+    this._workerBusy = false;
+  }
 
   setParams(params) {
-    if (params.frameOffset !== undefined) this.frameOffset = params.frameOffset;
-    if (params.threshold !== undefined) this.threshold = params.threshold;
-    if (params.trailLength !== undefined) this.trailLength = params.trailLength;
-    if (params.channelSpread !== undefined) this.channelSpread = params.channelSpread;
-    if (params.algorithm !== undefined) this.algorithm = params.algorithm;
-    if (params.blurEnabled !== undefined) this.blurEnabled = params.blurEnabled;
+    if (params.frameOffset !== undefined) this.params.frameOffset = params.frameOffset;
+    if (params.threshold !== undefined) this.params.threshold = params.threshold;
+    if (params.trailLength !== undefined) this.params.trailLength = params.trailLength;
+    if (params.channelSpread !== undefined) this.params.channelSpread = params.channelSpread;
+    if (params.algorithm !== undefined) this.params.algorithm = params.algorithm;
+    if (params.blurEnabled !== undefined) this.params.blurEnabled = params.blurEnabled;
   }
 
   updateDimensions(video) {
@@ -52,96 +98,58 @@ export class Pipeline {
     this.height = Math.round(vh * scale);
     this._capCanvas.width = this.width;
     this._capCanvas.height = this.height;
-    this.frameBuffer.clear();
-    this.trailBuffer.clear();
+    this.start();
   }
 
   captureFrame(video) {
     if (!this.width || !this.height) return null;
     try {
       this._capCtx.drawImage(video, 0, 0, this.width, this.height);
-      const frame = this._capCtx.getImageData(0, 0, this.width, this.height);
-      this.frameBuffer.push(frame);
-      return frame;
+      return this._capCtx.getImageData(0, 0, this.width, this.height);
     } catch {
       return null;
     }
   }
 
-  _clamp(offset) {
-    return Math.min(offset, this.frameBuffer.size - 1);
-  }
-
-  computeDiff() {
-    const cur = this.frameBuffer.get(0);
-    if (!cur) return null;
-
-    const k = this.frameOffset;
-    const spread = this.channelSpread;
-
-    const offR = this._clamp(k);
-    const offG = this._clamp(k + spread);
-    const offB = this._clamp(k + spread * 2);
-
-    const oldR = this.frameBuffer.get(offR);
-    const oldG = this.frameBuffer.get(offG);
-    const oldB = this.frameBuffer.get(offB);
-
-    if (!oldR || !oldG || !oldB) return null;
-
-    const curD = cur.data;
-    const len = curD.length;
-    const compositeOld = new Uint8ClampedArray(len);
-    const oR = oldR.data;
-    const oG = oldG.data;
-    const oB = oldB.data;
-    for (let i = 0; i < len; i += 4) {
-      compositeOld[i]     = oR[i];
-      compositeOld[i + 1] = oG[i + 1];
-      compositeOld[i + 2] = oB[i + 2];
-      compositeOld[i + 3] = 255;
-    }
-
-    const diff = new ImageData(this.width, this.height);
-
-    if (this.algorithm === 'posy') {
-      posyBlend(curD, compositeOld, diff.data, this.threshold);
-    } else {
-      rawDiff(curD, compositeOld, diff.data, this.threshold);
-    }
-
-    return diff;
-  }
-
-  accumulateDiff(diff) {
-    this.trailBuffer.push(diff);
-
-    const T = Math.min(this.trailLength, this.trailBuffer.size);
-    const frames = [];
-    for (let t = 0; t < T; t++) {
-      const frame = this.trailBuffer.get(t);
-      if (frame) frames.push(frame.data);
-    }
-
-    const isPosy = this.algorithm === 'posy';
-    const result = accumulate(frames, isPosy);
-    if (!result) return null;
-
-    return new ImageData(result, this.width, this.height);
+  _storePush(buffer) {
+    this._storeHead = (this._storeHead + 1) % FRAME_STORE_CAP;
+    this._frameStore[this._storeHead] = buffer;
+    if (this._storeSize < FRAME_STORE_CAP) this._storeSize++;
   }
 
   process(video) {
-    const currentFrame = this.captureFrame(video);
-    if (!currentFrame) return null;
+    const frame = this.captureFrame(video);
+    if (!frame) return;
 
-    let diff = this.computeDiff();
-    if (!diff) return { currentFrame, accumulated: null };
+    const pixelBytes = frame.data.buffer.byteLength;
+    const storeCopy = new ArrayBuffer(pixelBytes);
+    new Uint8ClampedArray(storeCopy).set(frame.data);
+    this._storePush(storeCopy);
 
-    if (this.blurEnabled) {
-      boxBlur(diff.data, this.width, this.height);
+    if (this._workerBusy) return;
+    this._workerBusy = true;
+
+    const currentFrameBuffer = frame.data.buffer;
+
+    const frameStoreBuffers = new Array(FRAME_STORE_CAP);
+    for (let i = 0; i < FRAME_STORE_CAP; i++) {
+      const buf = this._frameStore[i];
+      if (buf) {
+        frameStoreBuffers[i] = buf.slice(0);
+      } else {
+        frameStoreBuffers[i] = null;
+      }
     }
 
-    const accumulated = this.accumulateDiff(diff);
-    return { currentFrame, accumulated };
+    this._worker.postMessage({
+      type: 'process',
+      currentFrameBuffer,
+      frameStoreBuffers,
+      frameStoreSize: this._storeSize,
+      frameStoreHead: this._storeHead,
+      params: { ...this.params },
+      width: this.width,
+      height: this.height,
+    }, [currentFrameBuffer]);
   }
 }
