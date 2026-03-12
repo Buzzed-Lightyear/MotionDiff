@@ -1,7 +1,3 @@
-/**
- * Curated test clips — freely licensed nature footage from Pexels.
- * All URLs serve Access-Control-Allow-Origin: * so no CORS proxy needed.
- */
 export const TEST_CLIPS = [
   {
     label: 'Trees in Wind',

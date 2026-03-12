@@ -1,44 +1,46 @@
-/**
- * main.js — Entry point. Wires pipeline, renderer, UI, and the frame loop.
- */
+import { Pipeline } from './app/pipeline.js';
+import { render } from './app/renderer.js';
+import { initControls } from './ui/controls.js';
+import { setStatus } from './ui/status.js';
 
-import { Pipeline, Algorithm } from './pipeline.js';
-import { Renderer } from './renderer.js';
-import { UI } from './ui.js';
+const MODE_ORDER = ['diff', 'overlay', 'glow'];
+const MODE_LABELS = { diff: 'Diff', overlay: 'Overlay', glow: 'Glow' };
 
-// ─── Core modules ───
 const pipeline = new Pipeline();
-const videoEl  = /** @type {HTMLVideoElement} */ (document.getElementById('videoEl'));
-const canvas   = /** @type {HTMLCanvasElement} */ (document.getElementById('outputCanvas'));
-const renderer = new Renderer(canvas);
+const videoEl = document.getElementById('videoEl');
+const canvas = document.getElementById('outputCanvas');
+const outputCtx = canvas.getContext('2d', { willReadFrequently: true });
 
-// ─── Frame loop state ───
 let loopRunning = false;
 let animFrameId = null;
 let videoLoaded = false;
+let currentMode = 'overlay';
 
-// ─── UI ───
-const ui = new UI({
-  onFileLoad:       handleFileLoad,
-  onUrlLoad:        handleUrlLoad,
-  onPlayPause:      handlePlayPause,
-  onDisplayCycle:   () => renderer.cycleMode(),
-  onAlgorithmToggle: () => { /* pipeline reads state each tick */ },
-  onBlurToggle:      () => { /* pipeline reads state each tick */ },
+function cycleMode() {
+  const idx = MODE_ORDER.indexOf(currentMode);
+  currentMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+  return MODE_LABELS[currentMode];
+}
+
+const controls = initControls({
+  onFileLoad: handleFileLoad,
+  onUrlLoad: handleUrlLoad,
+  onPlayPause: handlePlayPause,
+  onDisplayCycle: () => cycleMode(),
+  onAlgorithmToggle: () => {},
+  onBlurToggle: () => {},
 });
 
-// ═══════════════════════════════════════
-// VIDEO LOADING
-// ═══════════════════════════════════════
+pipeline.init(videoEl, canvas);
 
 function handleFileLoad(file) {
   const url = URL.createObjectURL(file);
-  ui.setStatus('Loading...', 'info');
+  setStatus('Loading...', 'info');
   loadVideo(url, true);
 }
 
 function handleUrlLoad(url) {
-  ui.setStatus('Loading...', 'info');
+  setStatus('Loading...', 'info');
   loadVideo(url, false);
 }
 
@@ -69,15 +71,15 @@ function loadVideo(src, isLocal) {
     cleanup();
     if (!isLocal) {
       const proxied = `https://corsproxy.io/?${encodeURIComponent(src)}`;
-      ui.setStatus('Retrying via CORS proxy...', 'info');
+      setStatus('Retrying via CORS proxy...', 'info');
       videoEl.crossOrigin = 'anonymous';
       videoEl.src = proxied;
 
       const onCanPlayProxy = () => { cleanupProxy(); onVideoReady(); };
       const onErrorProxy = () => {
         cleanupProxy();
-        ui.setStatus('\u2717 Failed \u2014 check URL', 'error');
-        ui.showPlaceholders();
+        setStatus('\u2717 Failed \u2014 check URL', 'error');
+        controls.showPlaceholders();
       };
       const cleanupProxy = () => {
         videoEl.removeEventListener('canplay', onCanPlayProxy);
@@ -87,8 +89,8 @@ function loadVideo(src, isLocal) {
       videoEl.addEventListener('error', onErrorProxy);
       videoEl.load();
     } else {
-      ui.setStatus('\u2717 Failed to load file', 'error');
-      ui.showPlaceholders();
+      setStatus('\u2717 Failed to load file', 'error');
+      controls.showPlaceholders();
     }
   };
 
@@ -105,57 +107,50 @@ function loadVideo(src, isLocal) {
 function onVideoReady() {
   videoLoaded = true;
   pipeline.updateDimensions(videoEl);
-  renderer.resize(pipeline.width, pipeline.height);
-  ui.setStatus('\u2713 Loaded', 'success');
+  canvas.width = pipeline.width;
+  canvas.height = pipeline.height;
+  setStatus('\u2713 Loaded', 'success');
 
   videoEl.play().then(() => {
-    ui.setPlaying();
+    controls.setPlaying();
     startLoop();
   }).catch(() => {
-    ui.setStatus('\u2713 Loaded \u2014 press play', 'success');
-    ui.setPaused();
-    ui.btnPlayPause.disabled = false;
-    if (ui.placeholderOriginal) ui.placeholderOriginal.style.display = 'none';
-    if (ui.placeholderDiff)     ui.placeholderDiff.style.display = 'none';
+    setStatus('\u2713 Loaded \u2014 press play', 'success');
+    controls.setPaused();
+    controls.btnPlayPause.disabled = false;
+    if (controls.placeholderOriginal) controls.placeholderOriginal.style.display = 'none';
+    if (controls.placeholderDiff)     controls.placeholderDiff.style.display = 'none';
   });
 }
-
-// ═══════════════════════════════════════
-// PLAY / PAUSE
-// ═══════════════════════════════════════
 
 function handlePlayPause() {
   if (!videoLoaded) return;
   if (videoEl.paused) {
-    videoEl.play().then(() => { ui.setPlaying(); startLoop(); });
+    videoEl.play().then(() => { controls.setPlaying(); startLoop(); });
   } else {
     videoEl.pause();
-    ui.setPaused();
+    controls.setPaused();
     stopLoop();
   }
 }
 
-// ═══════════════════════════════════════
-// FRAME LOOP
-// ═══════════════════════════════════════
-
 function tick() {
   if (!loopRunning || !videoLoaded) return;
 
-  // Sync pipeline parameters from UI state
-  pipeline.frameOffset   = ui.state.frameOffset;
-  pipeline.threshold     = ui.state.threshold;
-  pipeline.trailLength   = ui.state.trailLength;
-  pipeline.channelSpread = ui.state.channelSpread;
-  pipeline.algorithm     = ui.state.algorithm === 'posy' ? Algorithm.POSY : Algorithm.RAW_DIFF;
-  pipeline.blurEnabled   = ui.state.blurEnabled;
+  pipeline.setParams({
+    frameOffset: controls.state.frameOffset,
+    threshold: controls.state.threshold,
+    trailLength: controls.state.trailLength,
+    channelSpread: controls.state.channelSpread,
+    algorithm: controls.state.algorithm,
+    blurEnabled: controls.state.blurEnabled,
+  });
 
   const result = pipeline.process(videoEl);
   if (result) {
-    renderer.render(result.currentFrame, result.accumulated, ui.state.algorithm);
+    render(currentMode, result.accumulated, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
   } else {
-    if (ui.state.algorithm === 'posy') renderer.renderGray();
-    else renderer.renderBlack();
+    render(currentMode, null, null, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
   }
 
   scheduleNext();
@@ -180,10 +175,6 @@ function stopLoop() {
   }
 }
 
-// ═══════════════════════════════════════
-// VISIBILITY CHANGE
-// ═══════════════════════════════════════
-
 document.addEventListener('visibilitychange', () => {
   if (!videoLoaded) return;
   if (document.hidden) {
@@ -195,7 +186,7 @@ document.addEventListener('visibilitychange', () => {
   } else {
     if (videoEl.dataset.autoPaused === 'true') {
       delete videoEl.dataset.autoPaused;
-      videoEl.play().then(() => { ui.setPlaying(); startLoop(); });
+      videoEl.play().then(() => { controls.setPlaying(); startLoop(); });
     }
   }
 });
