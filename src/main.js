@@ -6,19 +6,30 @@ import { setStatus } from './ui/status.js';
 const MODE_ORDER = ['diff', 'overlay', 'glow'];
 const MODE_LABELS = { diff: 'Diff', overlay: 'Overlay', glow: 'Glow' };
 
+const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+
 const pipeline = new Pipeline();
 const videoEl = document.getElementById('videoEl');
 const canvas = document.getElementById('outputCanvas');
-const outputCtx = canvas.getContext('2d', { willReadFrequently: true });
+
+/**
+ * In WebGL mode the pipeline owns the canvas context (WebGL2).
+ * In Canvas2D fallback mode, we get a 2D context for renderer.js.
+ * We defer context creation until after pipeline.init() decides the path.
+ */
+let outputCtx = null;
 
 let loopRunning = false;
 let animFrameId = null;
+let rvfcId = null;
 let videoLoaded = false;
 let currentMode = 'overlay';
 
 function cycleMode() {
   const idx = MODE_ORDER.indexOf(currentMode);
   currentMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+  // Sync mode to pipeline for WebGL composite
+  pipeline.setMode(currentMode);
   return MODE_LABELS[currentMode];
 }
 
@@ -32,6 +43,17 @@ const controls = initControls({
 });
 
 pipeline.init(videoEl, canvas);
+
+// Set initial mode on pipeline
+pipeline.setMode(currentMode);
+
+// Log frame source
+console.log(`Frame source: ${HAS_RVFC ? 'requestVideoFrameCallback + VideoFrame' : 'requestAnimationFrame (fallback)'}`);
+
+// In Canvas2D fallback mode, get the 2D context
+if (!pipeline._useWebGL) {
+  outputCtx = canvas.getContext('2d', { willReadFrequently: true });
+}
 
 function handleFileLoad(file) {
   const url = URL.createObjectURL(file);
@@ -107,8 +129,14 @@ function loadVideo(src, isLocal) {
 function onVideoReady() {
   videoLoaded = true;
   pipeline.updateDimensions(videoEl);
-  canvas.width = pipeline.width;
-  canvas.height = pipeline.height;
+
+  // In Canvas2D fallback, we manually set canvas dimensions
+  // (WebGL path sets them inside pipeline.updateDimensions → glRenderer.setSize)
+  if (!pipeline._useWebGL) {
+    canvas.width = pipeline.width;
+    canvas.height = pipeline.height;
+  }
+
   setStatus('\u2713 Loaded', 'success');
 
   videoEl.play().then(() => {
@@ -134,8 +162,11 @@ function handlePlayPause() {
   }
 }
 
+// Canvas 2D fallback: Worker sends results via callback
 pipeline.onResult = (result) => {
   if (!loopRunning || !videoLoaded) return;
+  if (pipeline._useWebGL) return; // WebGL renders directly in process()
+
   if (result && result.accumulated) {
     render(currentMode, result.accumulated, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm);
   } else if (result && result.currentFrame) {
@@ -156,19 +187,31 @@ function tick() {
   });
 
   pipeline.process(videoEl);
-
-  scheduleNext();
 }
 
-function scheduleNext() {
-  if (!loopRunning) return;
-  animFrameId = requestAnimationFrame(tick);
+function rvfcTick(now, metadata) {
+  tick();
+  if (loopRunning) {
+    rvfcId = videoEl.requestVideoFrameCallback(rvfcTick);
+  }
+}
+
+function rafTick() {
+  tick();
+  if (loopRunning) {
+    animFrameId = requestAnimationFrame(rafTick);
+  }
 }
 
 function startLoop() {
   if (loopRunning) return;
   loopRunning = true;
-  scheduleNext();
+
+  if (HAS_RVFC) {
+    rvfcId = videoEl.requestVideoFrameCallback(rvfcTick);
+  } else {
+    animFrameId = requestAnimationFrame(rafTick);
+  }
 }
 
 function stopLoop() {
@@ -176,6 +219,10 @@ function stopLoop() {
   if (animFrameId !== null) {
     cancelAnimationFrame(animFrameId);
     animFrameId = null;
+  }
+  if (rvfcId !== null && HAS_RVFC) {
+    videoEl.cancelVideoFrameCallback(rvfcId);
+    rvfcId = null;
   }
 }
 

@@ -1,7 +1,13 @@
 import PipelineWorker from './pipeline.worker.js?worker';
+import { WebGLRenderer } from './renderer.webgl.js';
 
 const PROCESS_WIDTH = 640;
 const FRAME_STORE_CAP = 120;
+
+/**
+ * Whether the browser supports requestVideoFrameCallback on HTMLVideoElement.
+ */
+const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
 export class Pipeline {
   constructor() {
@@ -10,13 +16,28 @@ export class Pipeline {
     this.width = 0;
     this.height = 0;
 
+    // ── Frame store (circular buffer of ImageData for Worker fallback
+    //    or ArrayBuffer references for WebGL texture uploads) ──
     this._frameStore = new Array(FRAME_STORE_CAP);
     this._storeHead = -1;
     this._storeSize = 0;
 
+    // ── Worker path (fallback) ──
     this._worker = null;
     this._workerBusy = false;
     this._pendingFrame = null;
+
+    /** @type {boolean} Whether VideoFrame bridge is used for capture */
+    this._useVideoFrame = HAS_RVFC;
+
+    /** @type {boolean} Whether WebGL is active */
+    this._useWebGL = false;
+
+    /** @type {WebGLRenderer|null} */
+    this._glRenderer = null;
+
+    /** @type {HTMLCanvasElement|null} The output canvas element */
+    this._outputCanvas = null;
 
     this.params = {
       frameOffset: 5,
@@ -31,9 +52,22 @@ export class Pipeline {
   }
 
   init(videoEl, outputCanvasEl) {
+    this._outputCanvas = outputCanvasEl;
     this._capCanvas = document.createElement('canvas');
     this._capCtx = this._capCanvas.getContext('2d', { willReadFrequently: true });
-    this._initWorker();
+
+    // Try WebGL2 first
+    try {
+      this._glRenderer = new WebGLRenderer(outputCanvasEl);
+      this._useWebGL = true;
+      console.log('Renderer: WebGL2');
+    } catch (e) {
+      console.log('WebGL2 init failed:', e.message);
+      console.log('Renderer: Canvas 2D (fallback)');
+      this._useWebGL = false;
+      this._glRenderer = null;
+      this._initWorker();
+    }
   }
 
   _initWorker() {
@@ -70,6 +104,11 @@ export class Pipeline {
     this._frameStore = new Array(FRAME_STORE_CAP);
     this._storeHead = -1;
     this._storeSize = 0;
+
+    if (this._useWebGL && this._glRenderer) {
+      this._glRenderer.clearTrails();
+    }
+
     if (this._worker) {
       this._worker.postMessage({ type: 'clear' });
     }
@@ -98,26 +137,131 @@ export class Pipeline {
     this.height = Math.round(vh * scale);
     this._capCanvas.width = this.width;
     this._capCanvas.height = this.height;
+
+    if (this._useWebGL && this._glRenderer) {
+      this._glRenderer.setSize(this.width, this.height);
+    }
+
     this.start();
   }
 
+  /**
+   * Capture current video frame as ImageData.
+   * Uses VideoFrame bridge when available.
+   */
   captureFrame(video) {
     if (!this.width || !this.height) return null;
     try {
-      this._capCtx.drawImage(video, 0, 0, this.width, this.height);
-      return this._capCtx.getImageData(0, 0, this.width, this.height);
+      if (this._useVideoFrame) {
+        const vf = new VideoFrame(video);
+        this._capCtx.drawImage(vf, 0, 0, this.width, this.height);
+        vf.close();
+        return this._capCtx.getImageData(0, 0, this.width, this.height);
+      } else {
+        this._capCtx.drawImage(video, 0, 0, this.width, this.height);
+        return this._capCtx.getImageData(0, 0, this.width, this.height);
+      }
     } catch {
       return null;
     }
   }
 
-  _storePush(buffer) {
+  _storePush(value) {
     this._storeHead = (this._storeHead + 1) % FRAME_STORE_CAP;
-    this._frameStore[this._storeHead] = buffer;
+    this._frameStore[this._storeHead] = value;
     if (this._storeSize < FRAME_STORE_CAP) this._storeSize++;
   }
 
+  _storeGet(offset) {
+    if (offset < 0 || offset >= this._storeSize) return null;
+    const idx = (this._storeHead - offset + FRAME_STORE_CAP) % FRAME_STORE_CAP;
+    return this._frameStore[idx];
+  }
+
+  /**
+   * Main processing entry point.
+   * Routes to either WebGL or Worker path.
+   */
   process(video) {
+    if (this._useWebGL) {
+      this._processWebGL(video);
+    } else {
+      this._processWorker(video);
+    }
+  }
+
+  // ── WebGL Path ──────────────────────────────────────────────
+
+  _processWebGL(video) {
+    const frame = this.captureFrame(video);
+    if (!frame) return;
+
+    // Store the ImageData for later lookback
+    this._storePush(frame);
+
+    if (this._storeSize < 2) {
+      // Not enough frames yet — show blank
+      this._glRenderer.renderBlank(this.params.algorithm);
+      return;
+    }
+
+    const gl = this._glRenderer;
+    const { frameOffset, threshold, channelSpread, trailLength, algorithm, blurEnabled } = this.params;
+    const k = frameOffset;
+    const spread = channelSpread;
+
+    // Calculate clamped offsets for RGB channel spread
+    const clamp = (off) => Math.min(off, this._storeSize - 1);
+    const offR = clamp(k);
+    const offG = clamp(k + spread);
+    const offB = clamp(k + spread * 2);
+
+    const oldR = this._storeGet(offR);
+    const oldG = this._storeGet(offG);
+    const oldB = this._storeGet(offB);
+
+    if (!oldR || !oldG || !oldB) {
+      gl.renderBlank(algorithm);
+      return;
+    }
+
+    // Upload textures
+    gl.uploadImageData(frame, 'current');
+    gl.uploadImageData(oldR, 'oldR');
+    gl.uploadImageData(oldG, 'oldG');
+    gl.uploadImageData(oldB, 'oldB');
+
+    // Run diff shader → _diffFB
+    gl.renderDiff({ threshold, algorithm });
+
+    // Optional blur
+    if (blurEnabled) {
+      gl.renderBlur();
+    }
+
+    // Push diff result into trail ring
+    gl.pushTrail();
+
+    // Accumulate trails → _accumFB
+    const isPosy = algorithm === 'posy';
+    gl.renderAccumulate(trailLength, isPosy);
+
+    // Composite to canvas
+    gl.renderComposite(this._currentMode || 'diff', algorithm);
+  }
+
+  /**
+   * Set the current display mode for WebGL composite.
+   * Called from main.js to keep the mode in sync.
+   * @param {string} mode - 'diff' | 'overlay' | 'glow'
+   */
+  setMode(mode) {
+    this._currentMode = mode;
+  }
+
+  // ── Worker Path (fallback) ──────────────────────────────────
+
+  _processWorker(video) {
     const frame = this.captureFrame(video);
     if (!frame) return;
 
