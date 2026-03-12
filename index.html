@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>   
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MotionDiff — Temporal Motion Extraction</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0f0f0f;
+    --surface: #181818;
+    --border: #272727;
+    --text: #e0e0e0;
+    --muted: #777;
+    --accent: #00ffaa;
+    --accent-dim: #00cc88;
+    --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 16px 32px;
+    gap: 16px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* ─── Header ─── */
+  .header { text-align: center; width: 100%; }
+  .header h1 {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--accent);
+  }
+  .header p {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 2px;
+    font-family: var(--mono);
+  }
+
+  /* ─── Input Section ─── */
+  .input-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .file-wrap {
+    position: relative;
+  }
+  .file-wrap input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .file-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .file-wrap:hover .file-btn { border-color: var(--accent); }
+
+  .sep { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+
+  .url-group { display: flex; gap: 6px; align-items: center; }
+  .url-group input[type="text"] {
+    width: 280px;
+    padding: 7px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .url-group input[type="text"]:focus { border-color: var(--accent); }
+  .url-group input[type="text"]::placeholder { color: #444; }
+
+  .btn-primary {
+    padding: 7px 14px;
+    background: var(--accent);
+    color: #0f0f0f;
+    border: none;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-primary:hover { background: var(--accent-dim); }
+  .btn-primary:active { transform: scale(0.97); }
+
+  /* ─── Presets ─── */
+  .presets-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .presets-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .preset-btn {
+    padding: 5px 12px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 20px;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .preset-btn:hover { background: var(--accent); color: var(--bg); }
+
+  .status-msg {
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--muted);
+    min-height: 16px;
+    text-align: center;
+  }
+  .status-msg.error { color: #ff5555; }
+  .status-msg.success { color: var(--accent); }
+
+  /* ─── Panels ─── */
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .panel-label {
+    padding: 8px 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .panel-label .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .panel-label .dot.active { opacity: 1; }
+
+  .panel-body {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .panel-body video,
+  .panel-body canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+  }
+
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #3a3a3a;
+    font-family: var(--mono);
+    font-size: 13px;
+    gap: 6px;
+    pointer-events: none;
+  }
+  .placeholder svg { opacity: 0.25; }
+
+  /* ─── Controls ─── */
+  .controls {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 20px;
+    width: 100%;
+  }
+
+  .ctrl {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    align-items: center;
+    min-width: 100px;
+  }
+  .ctrl-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .ctrl-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 20px;
+    text-align: center;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 110px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+  input[type="range"]::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    cursor: pointer;
+  }
+
+  .btn-ctrl {
+    padding: 7px 14px;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .btn-ctrl:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-ctrl.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ─── Footer ─── */
+  .footer {
+    font-size: 11px;
+    color: #444;
+    font-family: var(--mono);
+    text-align: center;
+    margin-top: 4px;
+  }
+  .footer a {
+    color: #555;
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .footer a:hover { color: var(--accent); }
+
+  /* ─── Responsive ─── */
+  @media (max-width: 700px) {
+    .panels { grid-template-columns: 1fr; }
+    .url-group input[type="text"] { width: 160px; }
+    .controls { gap: 10px; padding: 12px 14px; }
+    .ctrl { min-width: 80px; }
+    input[type="range"] { width: 80px; }
+    .header h1 { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header class="header">
+    <h1>MotionDiff</h1>
+    <p>Temporal motion extraction &mdash; inspired by Posy</p>
+  </header>
+
+  <!-- Input row -->
+  <div class="input-row">
+    <div class="file-wrap">
+      <div class="file-btn">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 10V3m0 0L5 6m3-3l3 3"/>
+          <path d="M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2"/>
+        </svg>
+        Open File
+      </div>
+      <input type="file" id="fileInput" accept="video/*">
+    </div>
+    <span class="sep">or</span>
+    <div class="url-group">
+      <input type="text" id="urlInput" placeholder="Paste video URL...">
+      <button class="btn-primary" id="loadUrlBtn">Load</button>
+    </div>
+  </div>
+
+  <!-- Preset clips -->
+  <div class="presets-row">
+    <span class="presets-label">Presets:</span>
+    <div id="presetClips" style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="preset-btn" data-url="https://videos.pexels.com/video-files/1254570/1254570-hd_1920_1080_30fps.mp4">Trees in Wind</button>
+      <button class="preset-btn" data-url="https://videos.pexels.com/video-files/6981415/6981415-hd_1920_1080_25fps.mp4">Flowing River</button>
+      <button class="preset-btn" data-url="https://videos.pexels.com/video-files/5646694/5646694-hd_1920_1080_30fps.mp4">Sunset Timelapse</button>
+    </div>
+  </div>
+
+  <div class="status-msg" id="statusMsg"></div>
+
+  <!-- Panels -->
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-label">
+        <span class="dot" id="dotOriginal"></span>
+        Original
+      </div>
+      <div class="panel-body">
+        <video id="videoEl" playsinline muted loop></video>
+        <div class="placeholder" id="placeholderOriginal">
+          <svg width="40" height="40" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="6" y="10" width="36" height="28" rx="3"/>
+            <polygon points="20,18 32,24 20,30" fill="currentColor" stroke="none"/>
+          </svg>
+          Load a video to begin
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-label">
+        <span class="dot" id="dotDiff"></span>
+        Motion Diff
+      </div>
+      <div class="panel-body">
+        <canvas id="outputCanvas"></canvas>
+        <div class="placeholder" id="placeholderDiff">
+          <svg width="40" height="40" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="6" y="10" width="36" height="28" rx="3"/>
+            <path d="M16 30l6-8 4 5 6-9" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Diff output
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="ctrl">
+      <span class="ctrl-label">Offset</span>
+      <input type="range" id="sliderOffset" min="1" max="90" value="5">
+      <span class="ctrl-val" id="valOffset">5f</span>
+    </div>
+    <div class="ctrl">
+      <span class="ctrl-label">Threshold</span>
+      <input type="range" id="sliderThreshold" min="0" max="60" value="10">
+      <span class="ctrl-val" id="valThreshold">10</span>
+    </div>
+    <div class="ctrl">
+      <span class="ctrl-label">Trail</span>
+      <input type="range" id="sliderTrail" min="1" max="20" value="5">
+      <span class="ctrl-val" id="valTrail">5f</span>
+    </div>
+    <div class="ctrl">
+      <span class="ctrl-label">RGB Spread</span>
+      <input type="range" id="sliderSpread" min="0" max="5" value="0">
+      <span class="ctrl-val" id="valSpread">0f</span>
+    </div>
+
+    <div class="ctrl">
+      <button class="btn-ctrl active" id="btnAlgo">Posy</button>
+    </div>
+    <div class="ctrl">
+      <button class="btn-ctrl" id="btnBlur">Blur: Off</button>
+    </div>
+    <div class="ctrl">
+      <button class="btn-ctrl" id="btnDisplay">Mode: Overlay</button>
+    </div>
+    <div class="ctrl">
+      <button class="btn-ctrl" id="btnPlayPause" disabled>&#9654;</button>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <a href="https://www.perplexity.ai/computer" target="_blank" rel="noopener noreferrer">
+      Created with Perplexity Computer
+    </a>
+  </footer>
+
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
