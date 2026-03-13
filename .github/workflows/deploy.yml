@@ -5,6 +5,9 @@ on:
     branches:
       - master
   workflow_dispatch:     # manual trigger for testing feature branches
+  
+permissions:
+  contents: write   
 
 jobs:
   deploy:
