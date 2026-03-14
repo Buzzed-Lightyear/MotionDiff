@@ -1,7 +1,7 @@
 const DEFAULT_FPS = 30;
 const SCRUB_MAX = 1000;
 const HOLD_THRESHOLD_MS = 200;
-const REVERSE_INTERVAL_MS = 16;
+const REVERSE_INTERVAL_MS = 100;
 
 function isTypingTarget(target) {
   return Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'));
@@ -12,7 +12,16 @@ function clampTime(time, duration) {
   return Math.min(Math.max(time, 0), duration);
 }
 
-export function initTimeline({ videoEl, onPlayPause, onStep }) {
+function setRangeFill(slider) {
+  if (!slider) return;
+  const min = Number.parseFloat(slider.min || '0');
+  const max = Number.parseFloat(slider.max || '100');
+  const value = Number.parseFloat(slider.value || '0');
+  const percent = max > min ? ((value - min) / (max - min)) * 100 : 0;
+  slider.style.backgroundSize = `${percent}% 100%, 100% 100%`;
+}
+
+export function initTimeline({ videoEl, onPlayPause, onStep, getFpsCap, getProcessingWidth }) {
   const scrubber = document.getElementById('timelineScrubber');
   const frameCounter = document.getElementById('frameCounter');
   const playbackRateSelect = document.getElementById('playbackRateSelect');
@@ -41,7 +50,29 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
     const currentFrame = Math.round(currentTime * getFPS());
     const totalFrames = Math.round(duration * getFPS());
     const fpsLabel = Number.isInteger(getFPS()) ? getFPS() : getFPS().toFixed(2);
-    frameCounter.textContent = `${currentFrame} / ${totalFrames} @ ${fpsLabel} fps`;
+    const fpsCap = typeof getFpsCap === 'function' ? getFpsCap() : null;
+    const processingWidth = typeof getProcessingWidth === 'function' ? getProcessingWidth() : null;
+    const sourceWidth = Number.isFinite(videoEl.videoWidth) && videoEl.videoWidth > 0 ? videoEl.videoWidth : null;
+    const showWidthToken = Number.isFinite(processingWidth) && processingWidth > 0 && processingWidth !== sourceWidth;
+    const showCapToken = Number.isFinite(fpsCap) && fpsCap > 0;
+    const showContext = showWidthToken || showCapToken;
+    const tokens = [
+      `<span class="frame-counter__numbers">${currentFrame} / ${totalFrames}</span>`,
+      '<span class="frame-counter__token">&middot;</span>',
+      `<span class="frame-counter__token">${fpsLabel}fps${showContext ? ' src' : ''}</span>`,
+    ];
+
+    if (showWidthToken) {
+      tokens.push('<span class="frame-counter__token">&middot;</span>');
+      tokens.push(`<span class="frame-counter__token">${processingWidth}px</span>`);
+    }
+
+    if (showCapToken) {
+      tokens.push('<span class="frame-counter__token">&middot;</span>');
+      tokens.push(`<span class="frame-counter__token">cap ${fpsCap}fps</span>`);
+    }
+
+    frameCounter.innerHTML = tokens.join(' ');
   }
 
   function syncScrubber() {
@@ -49,11 +80,13 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
     const duration = videoEl.duration;
     if (!Number.isFinite(duration) || duration <= 0) {
       scrubber.value = '0';
+      setRangeFill(scrubber);
       updateFrameCounter();
       return;
     }
     const ratio = clampTime(videoEl.currentTime || 0, duration) / duration;
     scrubber.value = String(Math.round(ratio * SCRUB_MAX));
+    setRangeFill(scrubber);
     updateFrameCounter();
   }
 
@@ -95,6 +128,7 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
     if (!Number.isFinite(duration) || duration <= 0) return;
     const nextTime = (parseFloat(scrubber.value) / SCRUB_MAX) * duration;
     videoEl.currentTime = clampTime(nextTime, duration);
+    setRangeFill(scrubber);
     updateFrameCounter();
   }
 
@@ -107,6 +141,7 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
     if (!enabled) {
       activeStepPress = null;
       stopHoldState();
+      setRangeFill(scrubber);
     }
   }
 
@@ -126,6 +161,7 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
     if (reverseInterval !== null) {
       clearInterval(reverseInterval);
       reverseInterval = null;
+      videoEl.pause();
     }
   }
 
@@ -151,7 +187,10 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
     if (!videoEl.paused) {
       onPlayPause();
     }
+    // Reverse scrub is throttled - browsers require keyframe decoding
+    // for backward seeks. Stutter on compressed video is expected.
     reverseInterval = setInterval(() => {
+      if (videoEl.seeking) return;
       const currentTime = videoEl.currentTime || 0;
       const nextTime = Math.max(0, currentTime - (1 / getFPS()));
       if (nextTime !== currentTime) {
@@ -301,6 +340,7 @@ export function initTimeline({ videoEl, onPlayPause, onStep }) {
   setEnabled(false);
   setPaused();
   startUIUpdates();
+  setRangeFill(scrubber);
   updateFrameCounter();
 
   return {

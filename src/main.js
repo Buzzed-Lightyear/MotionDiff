@@ -4,6 +4,7 @@ import { CanvasRecorder } from './app/exporter.js';
 import { render, renderBlank } from './app/renderer.js';
 import { analyzeSample } from './core/analyze.js';
 import { initControls } from './ui/controls.js';
+import { initHelp } from './ui/help.js';
 import { initPresets } from './ui/presets.js';
 import { initTimeline } from './ui/timeline.js';
 import { setStatus } from './ui/status.js';
@@ -35,6 +36,7 @@ let processedFrameCount = 0;
 let fpsWindowStart = 0;
 let skippedFrameCount = 0;
 const recorder = new CanvasRecorder(canvas);
+initHelp();
 
 function cycleMode() {
   const idx = MODE_ORDER.indexOf(currentMode);
@@ -61,6 +63,8 @@ const timeline = initTimeline({
   videoEl,
   onPlayPause: handlePlayPause,
   onStep: handleStepFrame,
+  getFpsCap: () => controls.state.fpsCap,
+  getProcessingWidth: () => controls.state.processingWidth,
 });
 initPresets({
   getCurrentParams: () => ({
@@ -115,6 +119,9 @@ function syncCanvasSize() {
 
 function handleParamChange(params) {
   pipeline.setParams(params);
+  if (params.fpsCap !== undefined) {
+    timeline.syncNow();
+  }
   if (videoLoaded && videoEl.paused) {
     processCurrentFrame();
   }
@@ -123,7 +130,7 @@ function handleParamChange(params) {
 function handleProcessingWidthChange(width) {
   pipeline.setProcessingWidth(width);
   syncCanvasSize();
-  setStatus(`Resolution: ${width}px — higher values may affect performance`, 'info');
+  timeline.syncNow();
   if (videoLoaded && videoEl.paused) {
     processCurrentFrame();
   }
@@ -436,6 +443,7 @@ function applyParameterPreset(params, name, source) {
     syncCanvasSize();
   }
   pipeline.setParams(params);
+  timeline.syncNow();
 
   if (videoLoaded) {
     processCurrentFrame();

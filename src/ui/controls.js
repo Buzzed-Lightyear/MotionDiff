@@ -1,3 +1,12 @@
+import Pickr from '@simonwep/pickr';
+
+const PICKR_SWATCHES = [
+  '#ff0000', '#ff4400', '#ffaa00',
+  '#00ff00', '#00ffaa', '#0044ff',
+  '#0000ff', '#aa00ff', '#ffffff',
+];
+const popTimers = new WeakMap();
+
 function normalizeHex(value, fallback) {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
 }
@@ -9,6 +18,38 @@ function parseNullableInt(value) {
 
   const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function pickrColorToHex(color, fallback) {
+  if (!color) return fallback;
+  const raw = color.toHEXA().toString().toLowerCase();
+  const match = raw.match(/^#([0-9a-f]{6})/i);
+  return match ? `#${match[1]}` : fallback;
+}
+
+function setRangeFill(slider) {
+  if (!slider) return;
+  const min = Number.parseFloat(slider.min || '0');
+  const max = Number.parseFloat(slider.max || '100');
+  const value = Number.parseFloat(slider.value || '0');
+  const percent = max > min ? ((value - min) / (max - min)) * 100 : 0;
+  slider.style.backgroundSize = `${percent}% 100%, 100% 100%`;
+}
+
+function triggerValuePop(labelEl) {
+  if (!labelEl) return;
+  const existingTimer = popTimers.get(labelEl);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+  labelEl.classList.remove('popping');
+  void labelEl.offsetWidth;
+  labelEl.classList.add('popping');
+  const timerId = window.setTimeout(() => {
+    labelEl.classList.remove('popping');
+    popTimers.delete(labelEl);
+  }, 300);
+  popTimers.set(labelEl, timerId);
 }
 
 export function initControls({
@@ -30,6 +71,8 @@ export function initControls({
   const autoConfigBtn = document.getElementById('autoConfigBtn');
   const btnWebcam = document.getElementById('btnWebcam');
   const btnScreen = document.getElementById('btnScreen');
+  const themeToggle = document.getElementById('themeToggle');
+  const statusEl = document.getElementById('statusMsg');
 
   const sliderOffset = document.getElementById('sliderOffset');
   const sliderThreshold = document.getElementById('sliderThreshold');
@@ -43,6 +86,7 @@ export function initControls({
 
   const selectResolution = document.getElementById('selectResolution');
   const selectFpsCap = document.getElementById('selectFpsCap');
+  const performanceStatus = document.getElementById('performanceStatus');
   const rgbTintGroup = document.getElementById('rgbTintGroup');
   const ageGradientGroup = document.getElementById('ageGradientGroup');
   const inputTintR = document.getElementById('rgbTintR');
@@ -61,6 +105,7 @@ export function initControls({
   const dotDiff = document.getElementById('dotDiff');
   const placeholderOriginal = document.getElementById('placeholderOriginal');
   const placeholderDiff = document.getElementById('placeholderDiff');
+  const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
 
   const state = {
     frameOffset: 5,
@@ -80,32 +125,89 @@ export function initControls({
     processingWidth: 640,
     fpsCap: null,
   };
+  const pickrs = {};
+  let activePresetButton = null;
 
   function emitParamChange(params) {
     if (onParamChange) onParamChange(params);
   }
 
+  function getTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
+  function updateThemeButton() {
+    if (!themeToggle) return;
+    const theme = getTheme();
+    themeToggle.innerHTML = theme === 'light' ? '&#9728;' : '&#9790;';
+    themeToggle.setAttribute('aria-label', theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
+    themeToggle.title = themeToggle.getAttribute('aria-label');
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('motiondiff-theme', theme);
+    } catch {
+      // Ignore storage failures; the toggle should still work for the session.
+    }
+    updateThemeButton();
+  }
+
+  function updatePerformanceStatus() {
+    if (!performanceStatus) return;
+    const capLabel = state.fpsCap ? `cap ${state.fpsCap}fps` : 'uncapped';
+    performanceStatus.innerHTML = `Processing at ${state.processingWidth}px &middot; ${capLabel}`;
+  }
+
+  function updatePresetLoadingState() {
+    const isLoading = Boolean(activePresetButton && statusEl?.classList.contains('loading'));
+    const presetButtons = document.querySelectorAll('#presetClips .preset-btn');
+    presetButtons.forEach((button) => {
+      button.classList.toggle('loading', isLoading && button === activePresetButton);
+    });
+  }
+
+  function setActivePresetButton(button) {
+    const presetButtons = document.querySelectorAll('#presetClips .preset-btn');
+    activePresetButton = button;
+    presetButtons.forEach((item) => {
+      item.classList.toggle('is-active', item === button);
+    });
+    updatePresetLoadingState();
+  }
+
+  function clearActivePresetButton() {
+    setActivePresetButton(null);
+  }
+
   function setOffset(value, notify = true) {
     const v = parseInt(value, 10);
     sliderOffset.value = String(v);
+    setRangeFill(sliderOffset);
     state.frameOffset = v;
     valOffset.textContent = `${v}f`;
+    if (notify) triggerValuePop(valOffset);
     if (notify) emitParamChange({ frameOffset: v });
   }
 
   function setThreshold(value, notify = true) {
     const v = parseInt(value, 10);
     sliderThreshold.value = String(v);
+    setRangeFill(sliderThreshold);
     state.threshold = v;
     valThreshold.textContent = String(v);
+    if (notify) triggerValuePop(valThreshold);
     if (notify) emitParamChange({ threshold: v });
   }
 
   function setTrailLength(value, notify = true) {
     const v = parseInt(value, 10);
     sliderTrail.value = String(v);
+    setRangeFill(sliderTrail);
     state.trailLength = v;
     valTrail.textContent = `${v}f`;
+    if (notify) triggerValuePop(valTrail);
     if (notify) emitParamChange({ trailLength: v });
   }
 
@@ -113,17 +215,24 @@ export function initControls({
     if (!rgbTintGroup) return;
     const visible = state.channelSpread > 0;
     rgbTintGroup.hidden = !visible;
-    [inputTintR, inputTintG, inputTintB].forEach((input) => {
-      if (input) input.disabled = !visible;
+    ['rgbTintR', 'rgbTintG', 'rgbTintB'].forEach((key) => {
+      if (!pickrs[key]) return;
+      if (visible) {
+        pickrs[key].enable();
+      } else {
+        pickrs[key].disable();
+      }
     });
   }
 
   function setChannelSpread(value, notify = true) {
     const v = parseInt(value, 10);
     sliderSpread.value = String(v);
+    setRangeFill(sliderSpread);
     state.channelSpread = v;
     valSpread.textContent = `${v}f`;
     updateRgbTintVisibility();
+    if (notify) triggerValuePop(valSpread);
     if (notify) emitParamChange({ channelSpread: v });
   }
 
@@ -137,8 +246,13 @@ export function initControls({
     const showGradient = algorithmAllowsAgeColor && state.ageColorEnabled;
     if (ageGradientGroup) {
       ageGradientGroup.hidden = !showGradient;
-      [inputAgeColorNew, inputAgeColorOld].forEach((input) => {
-        if (input) input.disabled = !showGradient;
+      ['ageColorNew', 'ageColorOld'].forEach((key) => {
+        if (!pickrs[key]) return;
+        if (showGradient) {
+          pickrs[key].enable();
+        } else {
+          pickrs[key].disable();
+        }
       });
     }
   }
@@ -172,8 +286,7 @@ export function initControls({
   function setRgbTint(key, value, notify = true) {
     const nextValue = normalizeHex(value, state[key]);
     state[key] = nextValue;
-    const input = key === 'rgbTintR' ? inputTintR : key === 'rgbTintG' ? inputTintG : inputTintB;
-    if (input) input.value = nextValue;
+    if (pickrs[key]) pickrs[key].setColor(nextValue, true);
     if (notify) emitParamChange({ [key]: nextValue });
   }
 
@@ -181,9 +294,40 @@ export function initControls({
     const fallback = key === 'ageColorNew' ? '#ff4400' : '#0044ff';
     const nextValue = normalizeHex(value, fallback);
     state[key] = nextValue;
-    const input = key === 'ageColorNew' ? inputAgeColorNew : inputAgeColorOld;
-    if (input) input.value = nextValue;
+    if (pickrs[key]) pickrs[key].setColor(nextValue, true);
     if (notify) emitParamChange({ [key]: nextValue });
+  }
+
+  function createColorPickr(elementId, defaultColor, onSave) {
+    const element = document.getElementById(elementId);
+    if (!element) return null;
+
+    const pickr = Pickr.create({
+      el: `#${elementId}`,
+      theme: 'nano',
+      inline: false,
+      defaultRepresentation: 'HEX',
+      default: defaultColor,
+      components: {
+        preview: true,
+        opacity: false,
+        hue: true,
+        interaction: {
+          hex: true,
+          input: true,
+          save: true,
+        },
+      },
+      swatches: PICKR_SWATCHES,
+    });
+
+    pickr.on('save', (color) => {
+      const hex = pickrColorToHex(color, defaultColor);
+      onSave(hex);
+      pickr.hide();
+    });
+
+    return pickr;
   }
 
   function setProcessingWidth(value, notify = true) {
@@ -191,6 +335,7 @@ export function initControls({
     if (!Number.isFinite(nextWidth)) return;
     state.processingWidth = nextWidth;
     if (selectResolution) selectResolution.value = String(nextWidth);
+    updatePerformanceStatus();
     if (notify && onProcessingWidthChange) onProcessingWidthChange(nextWidth);
   }
 
@@ -200,6 +345,7 @@ export function initControls({
     if (selectFpsCap) {
       selectFpsCap.value = nextCap === null ? 'max' : String(nextCap);
     }
+    updatePerformanceStatus();
     if (notify) emitParamChange({ fpsCap: nextCap });
   }
 
@@ -228,6 +374,7 @@ export function initControls({
   if (btnWebcam) {
     btnWebcam.hidden = !navigator.mediaDevices?.getUserMedia;
     btnWebcam.addEventListener('click', () => {
+      clearActivePresetButton();
       if (onWebcamLoad) onWebcamLoad();
     });
   }
@@ -235,22 +382,26 @@ export function initControls({
   if (btnScreen) {
     btnScreen.hidden = !navigator.mediaDevices?.getDisplayMedia;
     btnScreen.addEventListener('click', () => {
+      clearActivePresetButton();
       if (onScreenLoad) onScreenLoad();
     });
   }
 
   fileInput.addEventListener('change', (e) => {
+    clearActivePresetButton();
     const file = e.target.files?.[0];
     if (file) onFileLoad(file);
   });
 
   loadUrlBtn.addEventListener('click', () => {
+    clearActivePresetButton();
     const url = urlInput.value.trim();
     if (url) onUrlLoad(url);
   });
 
   urlInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
+      clearActivePresetButton();
       const url = urlInput.value.trim();
       if (url) onUrlLoad(url);
     }
@@ -272,26 +423,15 @@ export function initControls({
     setChannelSpread(sliderSpread.value);
   });
 
-  inputTintR?.addEventListener('input', () => {
-    setRgbTint('rgbTintR', inputTintR.value);
-  });
-  inputTintG?.addEventListener('input', () => {
-    setRgbTint('rgbTintG', inputTintG.value);
-  });
-  inputTintB?.addEventListener('input', () => {
-    setRgbTint('rgbTintB', inputTintB.value);
-  });
-  inputAgeColorNew?.addEventListener('input', () => {
-    setAgeGradient('ageColorNew', inputAgeColorNew.value);
-  });
-  inputAgeColorOld?.addEventListener('input', () => {
-    setAgeGradient('ageColorOld', inputAgeColorOld.value);
-  });
   selectResolution?.addEventListener('change', () => {
     setProcessingWidth(selectResolution.value);
   });
   selectFpsCap?.addEventListener('change', () => {
     setFpsCap(selectFpsCap.value);
+  });
+
+  themeToggle?.addEventListener('click', () => {
+    applyTheme(getTheme() === 'light' ? 'dark' : 'light');
   });
 
   btnAlgo.addEventListener('click', () => {
@@ -329,10 +469,24 @@ export function initControls({
       const url = btn.getAttribute('data-url');
       if (url) {
         btn.addEventListener('click', () => {
+          setActivePresetButton(btn);
           urlInput.value = url;
           onUrlLoad(url);
         });
       }
+    });
+  }
+
+  if (statusEl) {
+    const observer = new MutationObserver(() => {
+      updatePresetLoadingState();
+    });
+    observer.observe(statusEl, {
+      attributes: true,
+      attributeFilter: ['class'],
+      childList: true,
+      characterData: true,
+      subtree: true,
     });
   }
 
@@ -357,8 +511,40 @@ export function initControls({
     if (dotDiff) dotDiff.classList.remove('active');
   }
 
+  pickrs.rgbTintR = createColorPickr('rgbTintR', state.rgbTintR, (hex) => {
+    setRgbTint('rgbTintR', hex);
+  });
+  pickrs.rgbTintG = createColorPickr('rgbTintG', state.rgbTintG, (hex) => {
+    setRgbTint('rgbTintG', hex);
+  });
+  pickrs.rgbTintB = createColorPickr('rgbTintB', state.rgbTintB, (hex) => {
+    setRgbTint('rgbTintB', hex);
+  });
+  pickrs.ageColorNew = createColorPickr('ageColorNew', state.ageColorNew, (hex) => {
+    setAgeGradient('ageColorNew', hex);
+  });
+  pickrs.ageColorOld = createColorPickr('ageColorOld', state.ageColorOld, (hex) => {
+    setAgeGradient('ageColorOld', hex);
+  });
+
+  setRgbTint('rgbTintR', state.rgbTintR, false);
+  setRgbTint('rgbTintG', state.rgbTintG, false);
+  setRgbTint('rgbTintB', state.rgbTintB, false);
+  setAgeGradient('ageColorNew', state.ageColorNew, false);
+  setAgeGradient('ageColorOld', state.ageColorOld, false);
+  rangeInputs.forEach((input) => {
+    setRangeFill(input);
+    input.addEventListener('input', () => {
+      setRangeFill(input);
+    });
+    input.addEventListener('change', () => {
+      setRangeFill(input);
+    });
+  });
+  updateThemeButton();
   updateRgbTintVisibility();
   updateAgeColorVisibility();
+  updatePerformanceStatus();
   setFpsCap(state.fpsCap, false);
   if (selectResolution) selectResolution.value = String(state.processingWidth);
 

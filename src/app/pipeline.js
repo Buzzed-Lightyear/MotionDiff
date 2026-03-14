@@ -149,6 +149,11 @@ export class Pipeline {
     this.setHlsInstance(null);
   }
 
+  logProcessingConfig() {
+    const capLabel = this.params.fpsCap ? `${this.params.fpsCap}fps` : 'uncapped';
+    console.log(`Pipeline: processing at ${this._processWidth}px, cap ${capLabel}`);
+  }
+
   setParams(params) {
     if (params.frameOffset !== undefined) this.params.frameOffset = params.frameOffset;
     if (params.threshold !== undefined) this.params.threshold = params.threshold;
@@ -162,7 +167,10 @@ export class Pipeline {
     if (params.rgbTintB !== undefined) this.params.rgbTintB = params.rgbTintB;
     if (params.ageColorNew !== undefined) this.params.ageColorNew = params.ageColorNew;
     if (params.ageColorOld !== undefined) this.params.ageColorOld = params.ageColorOld;
-    if (params.fpsCap !== undefined) this.params.fpsCap = params.fpsCap;
+    if (params.fpsCap !== undefined && params.fpsCap !== this.params.fpsCap) {
+      this.params.fpsCap = params.fpsCap;
+      this.logProcessingConfig();
+    }
   }
 
   setProcessingWidth(width) {
@@ -177,6 +185,7 @@ export class Pipeline {
     if (this._videoEl) {
       this.updateDimensions(this._videoEl);
     }
+    this.logProcessingConfig();
   }
 
   updateDimensions(video) {
