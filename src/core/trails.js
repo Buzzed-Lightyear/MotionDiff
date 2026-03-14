@@ -1,3 +1,18 @@
+/**
+ * Merge multiple diff frames into a single trail image via per-channel max.
+ *
+ * In raw mode the highest raw value per channel wins (standard max),
+ * and the base fill is 0 (black = no motion).
+ *
+ * In Posy mode the highest DEVIATION FROM 128 wins per channel,
+ * and the base fill is 128 (gray = no motion). This distinction matters:
+ * a pixel at value 50 carries more motion energy than one at 130 in Posy
+ * space (deviation 78 vs 2), even though 50 < 130 numerically.
+ *
+ * @param {Uint8ClampedArray[]} frames - Array of diff frame pixel buffers
+ * @param {boolean}             isPosy - Use deviation-from-128 comparison
+ * @returns {Uint8ClampedArray|null}    New buffer, or null if frames is empty
+ */
 export function accumulate(frames, isPosy) {
   if (!frames.length) return null;
 

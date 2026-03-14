@@ -1,70 +1,130 @@
 # MotionDiff
+MotionDiff is a browser-based temporal frame differencing tool for revealing subtle motion in video.
 
-Temporal motion extraction tool inspired by [Posy's video](https://www.youtube.com/watch?v=NSS6yAMZF78). Captures live or pre-recorded video, computes frame-to-frame differences using two algorithms, and visualizes the result with configurable trail accumulation, blur, and display modes.
+## Algorithm
 
-## Quick Start
+### Posy Blend (default)
+Posy Blend compares the current frame against an older frame after inverting the old one:
 
+`blend = (current + invert(old)) / 2`
+
+For a static pixel, the math always collapses to the same midpoint:
+
+`static pixel: (V + (255 - V)) / 2 = 128`
+
+That is true for every possible input value `V`. The consequence is the signature MotionDiff look: the background cancels to gray, and motion glows away from gray. With RGB time-shift enabled, the color of that glow depends on which channel is comparing against which moment in time, so direction and speed become visible as colored fringes instead of plain luminance.
+
+### Raw Diff
+Raw Diff uses absolute channel difference:
+
+`diff = |current - old|`
+
+Static regions go to black, and brighter pixels mean larger motion between the two samples. It is the more literal mode: high contrast, easy to read, and good for simple motion detection when you do not need Posy mode's gray-centered directional color.
+
+### Frame offset (k)
+The frame offset chooses how far back in time the comparison reaches.
+
+| k value | Best for |
+|---------|----------|
+| 1-3 | Fast motion, people walking, hand gestures |
+| 5-15 | General nature footage, moderate motion |
+| 20-40 | Slow drift, clouds, fog, rising steam |
+| 50-90 | Imperceptibly slow motion, moonrise, tide |
+
+### RGB channel time-shift
+Instead of comparing all channels to the same old frame, MotionDiff can offset them in time:
+
+- Red samples `k`
+- Green samples `k + spread`
+- Blue samples `k + spread x 2`
+
+That stagger turns time into color. When an edge moves, each channel sees it at a slightly different temporal position, so the merged result becomes a directional smear rather than a white outline.
+
+```text
+time:     now  <- current frame
+R old:    t - k
+G old:    t - (k + spread)
+B old:    t - (k + spread x 2)
+```
+
+### Trail accumulation
+Trail accumulation merges the last `T` diff frames into one image.
+
+- Posy mode keeps the value with the largest deviation from 128 on each channel.
+- Raw Diff keeps the largest raw channel value on each channel.
+
+`T = trail length`, so larger values hold motion on screen longer. Short trails show immediate movement. Long trails turn motion into persistent streaks and ghosted silhouettes.
+
+### Threshold
+Threshold suppresses noise before accumulation.
+
+- Low threshold: more sensitive, more noise.
+- High threshold: cleaner image, but subtle motion can disappear.
+
+### Display modes
+| Mode | Description |
+|------|-------------|
+| Diff | Raw algorithm output only |
+| Overlay | Motion screen-blended onto original frame |
+| Glow | Original + amplified additive bloom from motion |
+
+## Project structure
+```text
+.
+|-- .github/workflows/deploy.yml       GitHub Actions workflow for production build and Pages deploy.
+|-- public/favicon.svg                 Browser tab icon.
+|-- public/icons.svg                   Shared SVG icon sheet.
+|-- src/app/clips.js                   Built-in preset clip catalog.
+|-- src/app/exporter.js                MediaRecorder-based WebM export helper.
+|-- src/app/loader.js                  URL source detection for direct, HLS, and DASH cases.
+|-- src/app/pipeline.js                Runtime orchestration for capture, buffering, and renderer selection.
+|-- src/app/pipeline.worker.js         Canvas fallback worker for diff, blur, and trail accumulation.
+|-- src/app/renderer.js                Canvas 2D compositing for diff, overlay, and glow modes.
+|-- src/app/renderer.webgl.js          WebGL2 renderer and shader pipeline.
+|-- src/core/analyze.js                Auto-configuration heuristic for sampled frame motion.
+|-- src/core/__tests__/core.test.js    Unit tests for pure motion-processing logic.
+|-- src/core/blur.js                   3 x 3 box blur implementation.
+|-- src/core/buffer.js                 Circular frame buffer primitive.
+|-- src/core/diff.js                   Posy Blend and Raw Diff pixel math.
+|-- src/core/trails.js                 Trail accumulation rules for Posy and Raw modes.
+|-- src/main.js                        App wiring and render loop control.
+|-- src/styles/main.css                Main application stylesheet and theme variables.
+|-- src/ui/controls.js                 DOM event bindings for controls and presets.
+|-- src/ui/help.js                     Help drawer rendering and open/close behavior.
+|-- src/ui/presets.js                  Saved-configuration dropdown and localStorage persistence.
+|-- src/ui/status.js                   Status bar helper.
+|-- src/ui/theme.js                    Color-theme swatches and persisted aurora palette handling.
+|-- src/ui/timeline.js                 Timeline scrubber, transport controls, and shortcuts.
+|-- index.html                         Single-page shell and DOM structure.
+|-- package.json                       Scripts and top-level dependency declarations.
+|-- vite.config.js                     Vite base-path configuration.
+|-- README.md                          Project overview and algorithm reference.
+`-- docs/examples/*.md                 Extended examples and parameter recipes.
+```
+
+Layer dependencies are intentionally strict:
+
+```text
+core/ <- no imports
+app/  <- core/ only
+ui/   <- app/ only
+main.js <- app/ + ui/
+```
+
+## Development
 ```bash
+git clone <repo>
+cd motiondiff
 npm install
-npm run dev
+npm run dev     # http://localhost:5173/MotionDiff/
+npm test        # run core unit tests
+npm run build   # production build
 ```
 
-Open `http://localhost:3000` in a browser. Load a video file or paste a URL to begin.
+## Renderer
+MotionDiff detects WebGL2 at runtime and uses it when available; otherwise it falls back to a Canvas 2D + Worker pipeline. The console logs which renderer is active, so you can confirm the path immediately on load.
 
-## Architecture
+The WebGL renderer uploads frame data with `texImage2D` and keeps diff, blur, accumulation, and composite passes on the GPU. That avoids reading processed pixels back to the CPU every frame. The renderer also includes a `VideoFrame -> texImage2D` upload path, which is the ideal zero-readback direction for browser-native frame processing.
 
-```
-src/
-├── core/           Pure functions — no DOM, no imports
-│   ├── buffer.js   CircularBuffer for frame storage
-│   ├── diff.js     posyBlend() and rawDiff() pixel math
-│   ├── blur.js     boxBlur() 3×3 convolution
-│   └── trails.js   accumulate() max-across-T-frames merge
-├── app/            Application logic — imports from core/ only
-│   ├── pipeline.js Frame capture, diff orchestration, state
-│   ├── renderer.js render() — diff, overlay (screen blend), glow (additive)
-│   └── clips.js    TEST_CLIPS preset video URLs
-├── ui/             DOM controls — may import from app/
-│   ├── controls.js initControls() with dependency-injected callbacks
-│   └── status.js   setStatus() status bar helper
-└── main.js         Wiring — imports from app/ and ui/ only
-```
-
-### Dependency Rules
-
-| Layer    | May import from |
-|----------|----------------|
-| `core/`  | nothing        |
-| `app/`   | `core/`        |
-| `ui/`    | `app/`         |
-| `main.js`| `app/`, `ui/`  |
-
-## Algorithms
-
-**Posy Blend** — `(current + invert(old) + 1) >> 1`. Static pixels produce gray (128); motion deviates from gray. Threshold filters by average deviation from 128.
-
-**Raw Diff** — `abs(current - old)` per channel. Static pixels produce black; motion produces bright edges. Threshold filters by average magnitude.
-
-## Controls
-
-| Control     | Range   | Description                                 |
-|-------------|---------|---------------------------------------------|
-| Offset      | 1–90f   | Frame delay for temporal comparison          |
-| Threshold   | 0–60    | Minimum motion magnitude to display          |
-| Trail       | 1–20f   | Number of diff frames to accumulate          |
-| RGB Spread  | 0–5f    | Per-channel time offset for chromatic effect  |
-| Algorithm   | Posy/Raw| Toggle between invert-blend and absolute diff|
-| Blur        | On/Off  | 3×3 box blur on diff output                 |
-| Mode        | Diff/Overlay/Glow | Display mode cycle              |
-
-## Display Modes
-
-- **Diff** — Raw diff output directly
-- **Overlay** — Screen blend of motion onto the original frame
-- **Glow** — Additive blend with amplified motion (bloom effect)
-
-## Build
-
-```bash
-npm run build   # Production build in dist/
-```
+## Tests
+Core coverage is focused on the pure functions under `src/core/`, including diff math, blur, buffer behavior, trails, and analysis helpers. Run the suite with `npm test`. The current suite contains 27 passing tests.

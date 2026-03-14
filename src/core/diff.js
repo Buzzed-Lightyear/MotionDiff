@@ -1,3 +1,23 @@
+/**
+ * Invert-blend temporal difference (Posy method).
+ *
+ * For each pixel: blend = (current + invert(old) + 1) >> 1.
+ * When current equals old (no motion), the terms cancel to exactly 128
+ * on every channel, because V + (255 − V) + 1 = 256 and 256 >> 1 = 128.
+ * Motion shifts channels away from 128; the magnitude of deviation
+ * encodes motion intensity.
+ *
+ * The +1 before the right-shift rounds to nearest instead of truncating.
+ *
+ * Threshold compares the mean per-pixel deviation from 128. Pixels
+ * below threshold are suppressed to gray (128, 128, 128) — not to zero,
+ * since gray is the "no motion" baseline in Posy space.
+ *
+ * @param {Uint8ClampedArray} curData  - Current frame RGBA pixel data
+ * @param {Uint8ClampedArray} oldData  - Previous frame RGBA pixel data
+ * @param {Uint8ClampedArray} outData  - Output buffer (written in-place)
+ * @param {number}            threshold - Minimum mean deviation to keep
+ */
 export function posyBlend(curData, oldData, outData, threshold) {
   const len = curData.length;
   for (let i = 0; i < len; i += 4) {
