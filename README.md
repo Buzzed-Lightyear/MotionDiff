@@ -71,35 +71,46 @@ Threshold suppresses noise before accumulation.
 ## Project structure
 ```text
 .
-|-- .github/workflows/deploy.yml       GitHub Actions workflow for production build and Pages deploy.
-|-- public/favicon.svg                 Browser tab icon.
-|-- public/icons.svg                   Shared SVG icon sheet.
-|-- src/app/clips.js                   Built-in preset clip catalog.
-|-- src/app/exporter.js                MediaRecorder-based WebM export helper.
-|-- src/app/loader.js                  URL source detection for direct, HLS, and DASH cases.
-|-- src/app/pipeline.js                Runtime orchestration for capture, buffering, and renderer selection.
-|-- src/app/pipeline.worker.js         Canvas fallback worker for diff, blur, and trail accumulation.
-|-- src/app/renderer.js                Canvas 2D compositing for diff, overlay, and glow modes.
-|-- src/app/renderer.webgl.js          WebGL2 renderer and shader pipeline.
-|-- src/core/analyze.js                Auto-configuration heuristic for sampled frame motion.
-|-- src/core/__tests__/core.test.js    Unit tests for pure motion-processing logic.
-|-- src/core/blur.js                   3 x 3 box blur implementation.
-|-- src/core/buffer.js                 Circular frame buffer primitive.
-|-- src/core/diff.js                   Posy Blend and Raw Diff pixel math.
-|-- src/core/trails.js                 Trail accumulation rules for Posy and Raw modes.
-|-- src/main.js                        App wiring and render loop control.
-|-- src/styles/main.css                Main application stylesheet and theme variables.
-|-- src/ui/controls.js                 DOM event bindings for controls and presets.
-|-- src/ui/help.js                     Help drawer rendering and open/close behavior.
-|-- src/ui/presets.js                  Saved-configuration dropdown and localStorage persistence.
-|-- src/ui/status.js                   Status bar helper.
-|-- src/ui/theme.js                    Color-theme swatches and persisted aurora palette handling.
-|-- src/ui/timeline.js                 Timeline scrubber, transport controls, and shortcuts.
-|-- index.html                         Single-page shell and DOM structure.
-|-- package.json                       Scripts and top-level dependency declarations.
-|-- vite.config.js                     Vite base-path configuration.
-|-- README.md                          Project overview and algorithm reference.
-`-- docs/examples/*.md                 Extended examples and parameter recipes.
+├── .github/
+│   └── workflows/
+│       └── deploy.yml              GitHub Actions workflow for production build and Pages deploy.
+├── public/
+│   ├── favicon.svg                 Browser tab icon.
+│   └── icons.svg                   Shared SVG icon sheet.
+├── src/
+│   ├── app/
+│   │   ├── clips.js                Built-in preset clip catalog.
+│   │   ├── exporter.js             MediaRecorder-based WebM export helper.
+│   │   ├── loader.js               URL source detection for direct, HLS, and DASH cases.
+│   │   ├── pipeline.js             Runtime orchestration for capture, buffering, and renderer selection.
+│   │   ├── pipeline.worker.js      Canvas fallback worker for diff, blur, and trail accumulation.
+│   │   ├── renderer.js             Canvas 2D compositing for diff, overlay, and glow modes.
+│   │   └── renderer.webgl.js       WebGL2 renderer and shader pipeline.
+│   ├── core/
+│   │   ├── __tests__/
+│   │   │   └── core.test.js        Unit tests for pure motion-processing logic.
+│   │   ├── analyze.js              Auto-configuration heuristic for sampled frame motion.
+│   │   ├── blur.js                 3 x 3 box blur implementation.
+│   │   ├── buffer.js               Circular frame buffer primitive.
+│   │   ├── diff.js                 Posy Blend and Raw Diff pixel math.
+│   │   └── trails.js               Trail accumulation rules for Posy and Raw modes.
+│   ├── styles/
+│   │   └── main.css                Main application stylesheet and theme variables.
+│   ├── ui/
+│   │   ├── controls.js             DOM event bindings for controls and presets.
+│   │   ├── help.js                 Help drawer rendering and open/close behavior.
+│   │   ├── presets.js              Saved-configuration dropdown and localStorage persistence.
+│   │   ├── status.js               Status bar helper.
+│   │   ├── theme.js                Color-theme swatches and persisted aurora palette handling.
+│   │   └── timeline.js             Timeline scrubber, transport controls, and shortcuts.
+│   └── main.js                     App wiring and render loop control.
+├── docs/
+│   └── examples/
+│       └── *.md                    Extended examples and parameter recipes.
+├── index.html                      Single-page shell and DOM structure.
+├── package.json                    Scripts and top-level dependency declarations.
+├── README.md                       Project overview and algorithm reference.
+└── vite.config.js                  Vite base-path configuration.
 ```
 
 Layer dependencies are intentionally strict:
