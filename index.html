@@ -36,7 +36,7 @@
     align-items: center;
     padding: 20px 16px 32px;
     gap: 16px;
-    max-width: 1400px;
+    width: 100%;
     margin: 0 auto;
   }
 
@@ -90,6 +90,7 @@
     transition: border-color 0.15s;
   }
   .file-wrap:hover .file-btn { border-color: var(--accent); }
+  .source-btn:hover { border-color: var(--accent); color: var(--accent); }
 
   .sep { color: var(--muted); font-size: 12px; font-family: var(--mono); }
 
@@ -153,6 +154,19 @@
   }
   .preset-btn:hover { background: var(--accent); color: var(--bg); }
 
+  .preset-select {
+    min-width: 220px;
+    padding: 7px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+  }
+  .preset-select:focus { border-color: var(--accent); }
+
   .status-msg {
     font-size: 12px;
     font-family: var(--mono);
@@ -211,6 +225,7 @@
   .panel-body video,
   .panel-body canvas {
     width: 100%;
+    max-width: 100%;
     height: 100%;
     display: block;
     object-fit: contain;
@@ -245,6 +260,83 @@
     width: 100%;
   }
 
+  .timeline {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .timeline-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .timeline-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .timeline-actions .btn-ctrl {
+    min-width: 44px;
+    padding: 8px 12px;
+  }
+
+  .timeline-actions .btn-play {
+    min-width: 58px;
+  }
+
+  .timeline-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .timeline-group select {
+    padding: 7px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .timeline-group select:focus {
+    border-color: var(--accent);
+  }
+
+  .frame-counter {
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .timeline-scrub {
+    width: 100%;
+  }
+
+  .timeline-scrub input[type="range"] {
+    width: 100%;
+    height: 6px;
+  }
+
   .ctrl {
     display: flex;
     flex-direction: column;
@@ -267,6 +359,55 @@
     color: var(--accent);
     min-width: 20px;
     text-align: center;
+  }
+
+  .control-select {
+    min-width: 110px;
+    padding: 7px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .control-select:focus {
+    border-color: var(--accent);
+  }
+
+  .ctrl-group {
+    min-width: 190px;
+    align-items: stretch;
+  }
+
+  .color-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .color-swatch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .color-swatch input[type="color"] {
+    width: 36px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
   }
 
   input[type="range"] {
@@ -316,6 +457,12 @@
     border-color: var(--accent);
     font-weight: 600;
   }
+  .btn-ctrl.recording {
+    background: #ff5d5d;
+    color: #120909;
+    border-color: #ff5d5d;
+    font-weight: 700;
+  }
 
   /* ─── Footer ─── */
   .footer {
@@ -337,6 +484,9 @@
     .panels { grid-template-columns: 1fr; }
     .url-group input[type="text"] { width: 160px; }
     .controls { gap: 10px; padding: 12px 14px; }
+    .timeline { padding: 12px 14px 14px; }
+    .timeline-row { align-items: stretch; }
+    .timeline-group { width: 100%; justify-content: space-between; }
     .ctrl { min-width: 80px; }
     input[type="range"] { width: 80px; }
     .header h1 { font-size: 20px; }
@@ -368,6 +518,8 @@
       <input type="text" id="urlInput" placeholder="Paste video URL...">
       <button class="btn-primary" id="loadUrlBtn">Load</button>
     </div>
+    <button class="file-btn source-btn" id="btnWebcam" hidden>Webcam</button>
+    <button class="file-btn source-btn" id="btnScreen" hidden>Screen</button>
   </div>
 
   <!-- Preset clips -->
@@ -378,6 +530,16 @@
       <button class="preset-btn" data-url="https://videos.pexels.com/video-files/6981415/6981415-hd_1920_1080_25fps.mp4">Flowing River</button>
       <button class="preset-btn" data-url="https://videos.pexels.com/video-files/5646694/5646694-hd_1920_1080_30fps.mp4">Sunset Timelapse</button>
     </div>
+  </div>
+
+  <div class="presets-row">
+    <span class="presets-label">Looks:</span>
+    <select id="presetConfigSelect" class="preset-select">
+      <option value="">Select parameter preset...</option>
+    </select>
+    <button class="btn-ctrl" id="autoConfigBtn">Auto</button>
+    <button class="btn-ctrl" id="savePresetBtn">Save current</button>
+    <button class="btn-ctrl" id="deletePresetBtn" disabled>Delete</button>
   </div>
 
   <div class="status-msg" id="statusMsg"></div>
@@ -418,6 +580,33 @@
     </div>
   </div>
 
+  <div class="timeline">
+    <div class="timeline-row">
+      <div class="timeline-actions">
+        <button class="btn-ctrl" id="btnStepBack" disabled aria-label="Step back one frame">&#9664;</button>
+        <button class="btn-ctrl btn-play" id="btnPlayPause" disabled aria-label="Play or pause">&#9654;</button>
+        <button class="btn-ctrl" id="btnStepForward" disabled aria-label="Step forward one frame">&#9654;</button>
+      </div>
+      <label class="timeline-group" for="playbackRateSelect">
+        <span>Speed</span>
+        <select id="playbackRateSelect" disabled>
+          <option value="0.25">0.25x</option>
+          <option value="0.5">0.5x</option>
+          <option value="1" selected>1x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2">2x</option>
+        </select>
+      </label>
+      <div class="timeline-group">
+        <span>Frames</span>
+        <span class="frame-counter" id="frameCounter">0 / 0 @ 30 fps</span>
+      </div>
+    </div>
+    <div class="timeline-scrub">
+      <input type="range" id="timelineScrubber" min="0" max="1000" value="0" disabled aria-label="Timeline scrubber">
+    </div>
+  </div>
+
   <!-- Controls -->
   <div class="controls">
     <div class="ctrl">
@@ -440,6 +629,34 @@
       <input type="range" id="sliderSpread" min="0" max="5" value="0">
       <span class="ctrl-val" id="valSpread">0f</span>
     </div>
+    <div class="ctrl ctrl-group" id="rgbTintGroup" hidden>
+      <span class="ctrl-label">RGB Tints</span>
+      <div class="color-row">
+        <label class="color-swatch" for="rgbTintR">R<input type="color" id="rgbTintR" value="#ff0000"></label>
+        <label class="color-swatch" for="rgbTintG">G<input type="color" id="rgbTintG" value="#00ff00"></label>
+        <label class="color-swatch" for="rgbTintB">B<input type="color" id="rgbTintB" value="#0000ff"></label>
+      </div>
+    </div>
+    <div class="ctrl">
+      <label class="ctrl-label" for="selectResolution">Resolution</label>
+      <select id="selectResolution" class="control-select">
+        <option value="320">320p</option>
+        <option value="480">480p</option>
+        <option value="640" selected>640p</option>
+        <option value="1280">720p</option>
+        <option value="1920">1080p</option>
+      </select>
+    </div>
+    <div class="ctrl">
+      <label class="ctrl-label" for="selectFpsCap">FPS Cap</label>
+      <select id="selectFpsCap" class="control-select">
+        <option value="max" selected>Max</option>
+        <option value="60">60</option>
+        <option value="30">30</option>
+        <option value="24">24</option>
+        <option value="15">15</option>
+      </select>
+    </div>
 
     <div class="ctrl">
       <button class="btn-ctrl active" id="btnAlgo">Posy</button>
@@ -448,10 +665,20 @@
       <button class="btn-ctrl" id="btnBlur">Blur: Off</button>
     </div>
     <div class="ctrl">
+      <button class="btn-ctrl" id="btnAgeColor">Color Age: Off</button>
+    </div>
+    <div class="ctrl ctrl-group" id="ageGradientGroup" hidden>
+      <span class="ctrl-label">Age Gradient</span>
+      <div class="color-row">
+        <label class="color-swatch" for="ageColorNew">New<input type="color" id="ageColorNew" value="#ff4400"></label>
+        <label class="color-swatch" for="ageColorOld">Old<input type="color" id="ageColorOld" value="#0044ff"></label>
+      </div>
+    </div>
+    <div class="ctrl">
       <button class="btn-ctrl" id="btnDisplay">Mode: Overlay</button>
     </div>
     <div class="ctrl">
-      <button class="btn-ctrl" id="btnPlayPause" disabled>&#9654;</button>
+      <button class="btn-ctrl" id="btnRecord">Record</button>
     </div>
   </div>
 

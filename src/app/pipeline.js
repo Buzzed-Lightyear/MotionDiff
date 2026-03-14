@@ -1,7 +1,7 @@
 import PipelineWorker from './pipeline.worker.js?worker';
 import { WebGLRenderer } from './renderer.webgl.js';
 
-const PROCESS_WIDTH = 640;
+const DEFAULT_PROCESS_WIDTH = 640;
 const FRAME_STORE_CAP = 120;
 
 /**
@@ -13,8 +13,11 @@ export class Pipeline {
   constructor() {
     this._capCanvas = null;
     this._capCtx = null;
+    this._videoEl = null;
     this.width = 0;
     this.height = 0;
+    this._processWidth = DEFAULT_PROCESS_WIDTH;
+    this._lastFrameTime = 0;
 
     // ── Frame store (circular buffer of ImageData for Worker fallback
     //    or ArrayBuffer references for WebGL texture uploads) ──
@@ -39,6 +42,8 @@ export class Pipeline {
     /** @type {HTMLCanvasElement|null} The output canvas element */
     this._outputCanvas = null;
 
+    this.hls = null;
+
     this.params = {
       frameOffset: 5,
       threshold: 10,
@@ -46,12 +51,20 @@ export class Pipeline {
       channelSpread: 0,
       algorithm: 'posy',
       blurEnabled: false,
+      ageColorEnabled: false,
+      rgbTintR: '#ff0000',
+      rgbTintG: '#00ff00',
+      rgbTintB: '#0000ff',
+      ageColorNew: '#ff4400',
+      ageColorOld: '#0044ff',
+      fpsCap: null,
     };
 
     this.onResult = null;
   }
 
   init(videoEl, outputCanvasEl) {
+    this._videoEl = videoEl;
     this._outputCanvas = outputCanvasEl;
     this._capCanvas = document.createElement('canvas');
     this._capCtx = this._capCanvas.getContext('2d', { willReadFrequently: true });
@@ -101,6 +114,15 @@ export class Pipeline {
   }
 
   start() {
+    this.clearState();
+  }
+
+  stop() {
+    this._workerBusy = false;
+    this._lastFrameTime = 0;
+  }
+
+  clearState() {
     this._frameStore = new Array(FRAME_STORE_CAP);
     this._storeHead = -1;
     this._storeSize = 0;
@@ -113,10 +135,18 @@ export class Pipeline {
       this._worker.postMessage({ type: 'clear' });
     }
     this._workerBusy = false;
+    this._lastFrameTime = 0;
   }
 
-  stop() {
-    this._workerBusy = false;
+  setHlsInstance(hls) {
+    if (this.hls) {
+      this.hls.destroy();
+    }
+    this.hls = hls;
+  }
+
+  clearExternalResources() {
+    this.setHlsInstance(null);
   }
 
   setParams(params) {
@@ -126,14 +156,35 @@ export class Pipeline {
     if (params.channelSpread !== undefined) this.params.channelSpread = params.channelSpread;
     if (params.algorithm !== undefined) this.params.algorithm = params.algorithm;
     if (params.blurEnabled !== undefined) this.params.blurEnabled = params.blurEnabled;
+    if (params.ageColorEnabled !== undefined) this.params.ageColorEnabled = params.ageColorEnabled;
+    if (params.rgbTintR !== undefined) this.params.rgbTintR = params.rgbTintR;
+    if (params.rgbTintG !== undefined) this.params.rgbTintG = params.rgbTintG;
+    if (params.rgbTintB !== undefined) this.params.rgbTintB = params.rgbTintB;
+    if (params.ageColorNew !== undefined) this.params.ageColorNew = params.ageColorNew;
+    if (params.ageColorOld !== undefined) this.params.ageColorOld = params.ageColorOld;
+    if (params.fpsCap !== undefined) this.params.fpsCap = params.fpsCap;
+  }
+
+  setProcessingWidth(width) {
+    const nextWidth = Number.parseInt(width, 10);
+    if (!Number.isFinite(nextWidth) || nextWidth <= 0 || nextWidth === this._processWidth) return;
+    this._processWidth = nextWidth;
+
+    if (!this._useWebGL && nextWidth > 640) {
+      console.warn(`Processing width ${nextWidth}px may be slow on Canvas 2D fallback.`);
+    }
+
+    if (this._videoEl) {
+      this.updateDimensions(this._videoEl);
+    }
   }
 
   updateDimensions(video) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return;
-    const scale = PROCESS_WIDTH / vw;
-    this.width = PROCESS_WIDTH;
+    const scale = this._processWidth / vw;
+    this.width = this._processWidth;
     this.height = Math.round(vh * scale);
     this._capCanvas.width = this.width;
     this._capCanvas.height = this.height;
@@ -178,6 +229,56 @@ export class Pipeline {
     return this._frameStore[idx];
   }
 
+  async sampleFrames(video, sampleCount = 30) {
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    if (!duration || !this.width || !this.height) return [];
+
+    const frames = [];
+    const totalSamples = Math.max(2, sampleCount);
+    const finalTime = Math.max(duration - 0.05, 0);
+    const originalTime = video.currentTime;
+
+    for (let index = 0; index < totalSamples; index++) {
+      const ratio = totalSamples === 1 ? 0 : index / (totalSamples - 1);
+      const targetTime = finalTime * ratio;
+      await this._seekVideo(video, targetTime);
+      const frame = this.captureFrame(video);
+      if (frame) {
+        frames.push(new Uint8ClampedArray(frame.data));
+      }
+    }
+
+    await this._seekVideo(video, originalTime);
+    return frames;
+  }
+
+  _seekVideo(video, targetTime) {
+    return new Promise((resolve, reject) => {
+      const clampedTime = Math.min(Math.max(targetTime, 0), Number.isFinite(video.duration) ? video.duration : targetTime);
+      if (Math.abs(video.currentTime - clampedTime) < 0.0005) {
+        resolve();
+        return;
+      }
+
+      const onSeeked = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error('Seek failed while sampling frames.'));
+      };
+      const cleanup = () => {
+        video.removeEventListener('seeked', onSeeked);
+        video.removeEventListener('error', onError);
+      };
+
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.addEventListener('error', onError, { once: true });
+      video.currentTime = clampedTime;
+    });
+  }
+
   /**
    * Main processing entry point.
    * Routes to either WebGL or Worker path.
@@ -201,12 +302,25 @@ export class Pipeline {
 
     if (this._storeSize < 2) {
       // Not enough frames yet — show blank
-      this._glRenderer.renderBlank(this.params.algorithm);
+      this._glRenderer.renderBlank(this.params.algorithm, this.params.ageColorEnabled);
       return;
     }
 
     const gl = this._glRenderer;
-    const { frameOffset, threshold, channelSpread, trailLength, algorithm, blurEnabled } = this.params;
+    const {
+      frameOffset,
+      threshold,
+      channelSpread,
+      trailLength,
+      algorithm,
+      blurEnabled,
+      ageColorEnabled,
+      rgbTintR,
+      rgbTintG,
+      rgbTintB,
+      ageColorNew,
+      ageColorOld,
+    } = this.params;
     const k = frameOffset;
     const spread = channelSpread;
 
@@ -221,7 +335,7 @@ export class Pipeline {
     const oldB = this._storeGet(offB);
 
     if (!oldR || !oldG || !oldB) {
-      gl.renderBlank(algorithm);
+      gl.renderBlank(algorithm, ageColorEnabled);
       return;
     }
 
@@ -232,7 +346,7 @@ export class Pipeline {
     gl.uploadImageData(oldB, 'oldB');
 
     // Run diff shader → _diffFB
-    gl.renderDiff({ threshold, algorithm });
+    gl.renderDiff({ threshold, algorithm, rgbTintR, rgbTintG, rgbTintB });
 
     // Optional blur
     if (blurEnabled) {
@@ -244,10 +358,10 @@ export class Pipeline {
 
     // Accumulate trails → _accumFB
     const isPosy = algorithm === 'posy';
-    gl.renderAccumulate(trailLength, isPosy);
+    gl.renderAccumulate(trailLength, isPosy, threshold, ageColorEnabled, ageColorNew, ageColorOld);
 
     // Composite to canvas
-    gl.renderComposite(this._currentMode || 'diff', algorithm);
+    gl.renderComposite(this._currentMode || 'diff', algorithm, ageColorEnabled);
   }
 
   /**

@@ -27,6 +27,9 @@ uniform sampler2D uCurrent;
 uniform sampler2D uOldR;
 uniform sampler2D uOldG;
 uniform sampler2D uOldB;
+uniform vec3 uTintR;
+uniform vec3 uTintG;
+uniform vec3 uTintB;
 uniform float uThreshold;   // 0–60 mapped to 0.0–0.235
 uniform int uAlgorithm;     // 0 = Posy, 1 = Raw Diff
 
@@ -39,8 +42,14 @@ void main() {
   vec4 oldG = texture(uOldG, vUV);
   vec4 oldB = texture(uOldB, vUV);
 
-  // Assemble channel-shifted old frame
-  vec3 old = vec3(oldR.r, oldG.g, oldB.b);
+  float tintSumR = max(dot(uTintR, vec3(1.0)), 0.0001);
+  float tintSumG = max(dot(uTintG, vec3(1.0)), 0.0001);
+  float tintSumB = max(dot(uTintB, vec3(1.0)), 0.0001);
+  vec3 old = vec3(
+    dot(oldR.rgb, uTintR / tintSumR),
+    dot(oldG.rgb, uTintG / tintSumG),
+    dot(oldB.rgb, uTintB / tintSumB)
+  );
 
   vec3 result;
   float mag;
@@ -91,12 +100,18 @@ uniform sampler2D uAccum;   // current accumulated result (or base fill)
 uniform sampler2D uTrail;   // next trail frame to merge
 uniform int uIsPosy;        // 1 = posy, 0 = raw
 uniform int uIsFirst;       // 1 = first pass (use base fill), 0 = read uAccum
+uniform int uAgeColorEnabled;
+uniform int uTrailIndex;
+uniform float uTrailAge[20];
+uniform float uThreshold;
+uniform vec3 uAgeColorNew;
+uniform vec3 uAgeColorOld;
 
 in vec2 vUV;
 out vec4 fragColor;
 
 void main() {
-  float baseVal = uIsPosy == 1 ? 0.5 : 0.0;
+  float baseVal = (uIsPosy == 1 && uAgeColorEnabled == 0) ? 0.5 : 0.0;
   vec3 best;
   if (uIsFirst == 1) {
     best = vec3(baseVal);
@@ -106,7 +121,17 @@ void main() {
 
   vec3 s = texture(uTrail, vUV).rgb;
 
-  if (uIsPosy == 1) {
+  if (uIsPosy == 1 && uAgeColorEnabled == 1) {
+    float age = uTrailAge[uTrailIndex];
+    float motionMagnitude = (
+      abs(s.r - 0.5) +
+      abs(s.g - 0.5) +
+      abs(s.b - 0.5)
+    ) / 1.5;
+    vec3 ageColor = mix(uAgeColorNew, uAgeColorOld, age);
+    vec3 tinted = motionMagnitude > uThreshold ? ageColor * motionMagnitude : vec3(0.0);
+    best = max(best, tinted);
+  } else if (uIsPosy == 1) {
     // Max deviation from 0.5 per channel
     vec3 bestDev = abs(best - 0.5);
     vec3 srcDev = abs(s - 0.5);
@@ -128,6 +153,7 @@ uniform sampler2D uDiff;
 uniform sampler2D uOriginal;
 uniform int uMode;       // 0=diff, 1=overlay, 2=glow
 uniform int uAlgorithm;  // 0=posy, 1=raw
+uniform int uAgeColorEnabled;
 
 in vec2 vUV;
 out vec4 fragColor;
@@ -144,7 +170,7 @@ void main() {
   } else if (uMode == 1) {
     // Overlay: screen blend of motion magnitude onto original
     vec3 mot;
-    if (uAlgorithm == 0) {
+    if (uAlgorithm == 0 && uAgeColorEnabled == 0) {
       mot = min(vec3(1.0), abs(diff - 0.5) * 4.0);
     } else {
       mot = min(vec3(1.0), diff * 2.0);
@@ -154,7 +180,7 @@ void main() {
   } else {
     // Glow: additive blend
     vec3 mot;
-    if (uAlgorithm == 0) {
+    if (uAlgorithm == 0 && uAgeColorEnabled == 0) {
       mot = min(vec3(1.0), abs(diff - 0.5) * 6.0);
     } else {
       mot = min(vec3(1.0), diff * 3.0);
@@ -207,6 +233,15 @@ function createFramebuffer(gl, tex) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
   return fb;
+}
+
+function hexToVec3(hex, fallback) {
+  const value = typeof hex === 'string' && /^#[0-9a-f]{6}$/i.test(hex) ? hex : fallback;
+  return [
+    parseInt(value.slice(1, 3), 16) / 255,
+    parseInt(value.slice(3, 5), 16) / 255,
+    parseInt(value.slice(5, 7), 16) / 255,
+  ];
 }
 
 // ── WebGLRenderer class ─────────────────────────────────────────
@@ -426,7 +461,7 @@ export class WebGLRenderer {
 
   /**
    * Run the diff shader. Output goes to the diff framebuffer.
-   * @param {object} params - { threshold, algorithm }
+   * @param {object} params - { threshold, algorithm, rgbTintR, rgbTintG, rgbTintB }
    */
   renderDiff(params) {
     const gl = this.gl;
@@ -454,6 +489,9 @@ export class WebGLRenderer {
     // threshold: 0–60 in UI → normalize to 0.0–0.235 range (60/255 ≈ 0.235)
     gl.uniform1f(gl.getUniformLocation(prog, 'uThreshold'), params.threshold / 255.0);
     gl.uniform1i(gl.getUniformLocation(prog, 'uAlgorithm'), params.algorithm === 'posy' ? 0 : 1);
+    gl.uniform3fv(gl.getUniformLocation(prog, 'uTintR'), hexToVec3(params.rgbTintR, '#ff0000'));
+    gl.uniform3fv(gl.getUniformLocation(prog, 'uTintG'), hexToVec3(params.rgbTintG, '#00ff00'));
+    gl.uniform3fv(gl.getUniformLocation(prog, 'uTintB'), hexToVec3(params.rgbTintB, '#0000ff'));
 
     // Draw to diff framebuffer
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._diffFB);
@@ -512,7 +550,7 @@ export class WebGLRenderer {
    * @param {number} trailLength - How many trail frames to merge
    * @param {boolean} isPosy
    */
-  renderAccumulate(trailLength, isPosy) {
+  renderAccumulate(trailLength, isPosy, threshold, ageColorEnabled, ageColorNew, ageColorOld) {
     const gl = this.gl;
     const prog = this._accumProg;
     gl.useProgram(prog);
@@ -524,9 +562,25 @@ export class WebGLRenderer {
     const uTrail = gl.getUniformLocation(prog, 'uTrail');
     const uIsPosy = gl.getUniformLocation(prog, 'uIsPosy');
     const uIsFirst = gl.getUniformLocation(prog, 'uIsFirst');
+    const uAgeColorEnabled = gl.getUniformLocation(prog, 'uAgeColorEnabled');
+    const uTrailIndex = gl.getUniformLocation(prog, 'uTrailIndex');
+    const uTrailAge = gl.getUniformLocation(prog, 'uTrailAge');
+    const uThreshold = gl.getUniformLocation(prog, 'uThreshold');
+    const uAgeColorNew = gl.getUniformLocation(prog, 'uAgeColorNew');
+    const uAgeColorOld = gl.getUniformLocation(prog, 'uAgeColorOld');
 
     gl.uniform1i(uIsPosy, isPosy ? 1 : 0);
+    gl.uniform1i(uAgeColorEnabled, ageColorEnabled ? 1 : 0);
+    gl.uniform1f(uThreshold, threshold / 255.0);
+    gl.uniform3fv(uAgeColorNew, hexToVec3(ageColorNew, '#ff4400'));
+    gl.uniform3fv(uAgeColorOld, hexToVec3(ageColorOld, '#0044ff'));
     gl.bindVertexArray(this._quadVAO);
+
+    const ages = new Float32Array(MAX_TRAILS);
+    for (let i = 0; i < T; i++) {
+      ages[i] = T <= 1 ? 0 : i / (T - 1);
+    }
+    gl.uniform1fv(uTrailAge, ages);
 
     // Ping-pong between _accumFB and _accumFB2
     // Read from A, write to B, then swap
@@ -550,6 +604,7 @@ export class WebGLRenderer {
 
       // On first pass, tell shader to use base fill instead of reading uAccum
       gl.uniform1i(uIsFirst, i === 0 ? 1 : 0);
+      gl.uniform1i(uTrailIndex, i);
 
       // Render to the write FB
       gl.bindFramebuffer(gl.FRAMEBUFFER, writeFB);
@@ -582,7 +637,7 @@ export class WebGLRenderer {
    * @param {string} mode - 'diff' | 'overlay' | 'glow'
    * @param {string} algorithm - 'posy' | 'raw'
    */
-  renderComposite(mode, algorithm) {
+  renderComposite(mode, algorithm, ageColorEnabled) {
     const gl = this.gl;
     const prog = this._compositeProg;
     gl.useProgram(prog);
@@ -602,6 +657,7 @@ export class WebGLRenderer {
     else if (mode === 'glow') modeInt = 2;
     gl.uniform1i(gl.getUniformLocation(prog, 'uMode'), modeInt);
     gl.uniform1i(gl.getUniformLocation(prog, 'uAlgorithm'), algorithm === 'posy' ? 0 : 1);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uAgeColorEnabled'), ageColorEnabled ? 1 : 0);
 
     // Draw to canvas (null framebuffer)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -614,11 +670,11 @@ export class WebGLRenderer {
    * Render a fallback solid color when no diff data is available.
    * @param {string} algorithm - 'posy' | 'raw'
    */
-  renderBlank(algorithm) {
+  renderBlank(algorithm, ageColorEnabled) {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
-    if (algorithm === 'posy') {
+    if (algorithm === 'posy' && !ageColorEnabled) {
       gl.clearColor(0.5, 0.5, 0.5, 1.0);
     } else {
       gl.clearColor(0.0, 0.0, 0.0, 1.0);

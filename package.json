@@ -10,8 +10,14 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "_dependencyNotes": {
+    "hls.js": "HLS stream playback for .m3u8 URLs"
+  },
   "devDependencies": {
     "vite": "^8.0.0",
     "vitest": "^4.1.0"
+  },
+  "dependencies": {
+    "hls.js": "^1.6.15"
   }
 }

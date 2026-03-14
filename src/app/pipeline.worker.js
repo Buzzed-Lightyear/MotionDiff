@@ -25,6 +25,55 @@ function trailClear() {
   trailSize = 0;
 }
 
+function hexToRgb(hex, fallback) {
+  const value = typeof hex === 'string' && /^#[0-9a-f]{6}$/i.test(hex) ? hex : fallback;
+  return [
+    parseInt(value.slice(1, 3), 16),
+    parseInt(value.slice(3, 5), 16),
+    parseInt(value.slice(5, 7), 16),
+  ];
+}
+
+function normalizeTint([r, g, b]) {
+  const sum = r + g + b;
+  if (sum <= 0) return [0, 0, 0];
+  return [r / sum, g / sum, b / sum];
+}
+
+function tintChannel(frame, index, tint) {
+  return Math.round(
+    frame[index] * tint[0] +
+    frame[index + 1] * tint[1] +
+    frame[index + 2] * tint[2]
+  );
+}
+
+function tintAgeFrame(frame, age, threshold, newestColor, oldestColor) {
+  const out = new Uint8ClampedArray(frame.length);
+  const thresholdNorm = threshold / 255;
+  const rFactor = newestColor[0] + ((oldestColor[0] - newestColor[0]) * age);
+  const gFactor = newestColor[1] + ((oldestColor[1] - newestColor[1]) * age);
+  const bFactor = newestColor[2] + ((oldestColor[2] - newestColor[2]) * age);
+
+  for (let i = 0; i < frame.length; i += 4) {
+    const motion = (
+      Math.abs(frame[i] - 128) +
+      Math.abs(frame[i + 1] - 128) +
+      Math.abs(frame[i + 2] - 128)
+    ) / (3 * 127);
+
+    if (motion > thresholdNorm) {
+      out[i] = Math.round(rFactor * motion * 255);
+      out[i + 1] = Math.round(gFactor * motion * 255);
+      out[i + 2] = Math.round(bFactor * motion * 255);
+    }
+
+    out[i + 3] = 255;
+  }
+
+  return out;
+}
+
 function clamp(offset, storeSize) {
   return Math.min(offset, storeSize - 1);
 }
@@ -55,7 +104,13 @@ self.onmessage = function (e) {
     trailLength,
     channelSpread,
     algorithm,
-    blurEnabled
+    blurEnabled,
+    ageColorEnabled,
+    rgbTintR,
+    rgbTintG,
+    rgbTintB,
+    ageColorNew,
+    ageColorOld,
   } = params;
 
   const storeCap = frameStoreBuffers.length;
@@ -79,6 +134,11 @@ self.onmessage = function (e) {
 
   const k = frameOffset;
   const spread = channelSpread;
+  const tintR = normalizeTint(hexToRgb(rgbTintR, '#ff0000'));
+  const tintG = normalizeTint(hexToRgb(rgbTintG, '#00ff00'));
+  const tintB = normalizeTint(hexToRgb(rgbTintB, '#0000ff'));
+  const ageNewest = hexToRgb(ageColorNew, '#ff4400').map((channel) => channel / 255);
+  const ageOldest = hexToRgb(ageColorOld, '#0044ff').map((channel) => channel / 255);
 
   const offR = clamp(k, frameStoreSize);
   const offG = clamp(k + spread, frameStoreSize);
@@ -99,9 +159,9 @@ self.onmessage = function (e) {
   const len = curData.length;
   const compositeOld = new Uint8ClampedArray(len);
   for (let i = 0; i < len; i += 4) {
-    compositeOld[i]     = oldR[i];
-    compositeOld[i + 1] = oldG[i + 1];
-    compositeOld[i + 2] = oldB[i + 2];
+    compositeOld[i]     = tintChannel(oldR, i, tintR);
+    compositeOld[i + 1] = tintChannel(oldG, i, tintG);
+    compositeOld[i + 2] = tintChannel(oldB, i, tintB);
     compositeOld[i + 3] = 255;
   }
 
@@ -123,10 +183,17 @@ self.onmessage = function (e) {
   const frames = [];
   for (let t = 0; t < T; t++) {
     const frame = trailGet(t);
-    if (frame) frames.push(frame);
+    if (!frame) continue;
+
+    if (ageColorEnabled && algorithm === 'posy') {
+      const age = T <= 1 ? 0 : t / (T - 1);
+      frames.push(tintAgeFrame(frame, age, threshold, ageNewest, ageOldest));
+    } else {
+      frames.push(frame);
+    }
   }
 
-  const isPosy = algorithm === 'posy';
+  const isPosy = algorithm === 'posy' && !ageColorEnabled;
   const accResult = accumulate(frames, isPosy);
 
   if (!accResult) {

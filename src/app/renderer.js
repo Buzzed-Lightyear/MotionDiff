@@ -1,11 +1,15 @@
-export function render(mode, diffData, originalData, outputCtx, width, height, algorithm) {
+export function renderBlank(outputCtx, width, height, algorithm, ageColorEnabled = false) {
+  if (algorithm === 'posy' && !ageColorEnabled) {
+    outputCtx.fillStyle = '#808080';
+  } else {
+    outputCtx.fillStyle = '#000';
+  }
+  outputCtx.fillRect(0, 0, width, height);
+}
+
+export function render(mode, diffData, originalData, outputCtx, width, height, algorithm, ageColorEnabled = false) {
   if (!diffData) {
-    if (algorithm === 'posy') {
-      outputCtx.fillStyle = '#808080';
-    } else {
-      outputCtx.fillStyle = '#000';
-    }
-    outputCtx.fillRect(0, 0, width, height);
+    renderBlank(outputCtx, width, height, algorithm, ageColorEnabled);
     return;
   }
 
@@ -14,10 +18,10 @@ export function render(mode, diffData, originalData, outputCtx, width, height, a
       renderDiff(diffData, outputCtx);
       break;
     case 'overlay':
-      renderOverlay(originalData, diffData, outputCtx, width, height, algorithm);
+      renderOverlay(originalData, diffData, outputCtx, width, height, algorithm, ageColorEnabled);
       break;
     case 'glow':
-      renderGlow(originalData, diffData, outputCtx, width, height, algorithm);
+      renderGlow(originalData, diffData, outputCtx, width, height, algorithm, ageColorEnabled);
       break;
   }
 }
@@ -26,14 +30,14 @@ function renderDiff(acc, ctx) {
   ctx.putImageData(acc, 0, 0);
 }
 
-function renderOverlay(currentFrame, accumulated, ctx, w, h, algorithm) {
+function renderOverlay(currentFrame, accumulated, ctx, w, h, algorithm, ageColorEnabled) {
   const orig = currentFrame.data;
   const diff = accumulated.data;
   const len = orig.length;
   const output = new ImageData(w, h);
   const out = output.data;
 
-  if (algorithm === 'posy') {
+  if (algorithm === 'posy' && !ageColorEnabled) {
     for (let i = 0; i < len; i += 4) {
       /**
        * Convert Posy diff from gray-centered space back to 0–255 motion
@@ -65,14 +69,14 @@ function renderOverlay(currentFrame, accumulated, ctx, w, h, algorithm) {
   ctx.putImageData(output, 0, 0);
 }
 
-function renderGlow(currentFrame, accumulated, ctx, w, h, algorithm) {
+function renderGlow(currentFrame, accumulated, ctx, w, h, algorithm, ageColorEnabled) {
   const orig = currentFrame.data;
   const diff = accumulated.data;
   const len = orig.length;
   const output = new ImageData(w, h);
   const out = output.data;
 
-  if (algorithm === 'posy') {
+  if (algorithm === 'posy' && !ageColorEnabled) {
     for (let i = 0; i < len; i += 4) {
       const motR = Math.min(255, Math.abs(diff[i]     - 128) * 6);
       const motG = Math.min(255, Math.abs(diff[i + 1] - 128) * 6);

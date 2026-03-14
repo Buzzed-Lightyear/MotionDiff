@@ -3,6 +3,7 @@ import { posyBlend, rawDiff } from '../diff.js';
 import { accumulate } from '../trails.js';
 import { boxBlur } from '../blur.js';
 import { CircularBuffer } from '../buffer.js';
+import { analyzeSample } from '../analyze.js';
 
 /**
  * Build a Uint8ClampedArray from RGBA quads.
@@ -346,5 +347,33 @@ describe('CircularBuffer', () => {
 
     expect(buf.size).toBe(0);
     expect(buf.get(0)).toBeNull();
+  });
+});
+
+describe('analyzeSample', () => {
+  it('suggests a low threshold and long offset for near-zero motion', () => {
+    const frames = [
+      makePixels([10, 20, 30, 255], [40, 50, 60, 255]),
+      makePixels([10, 20, 30, 255], [40, 50, 60, 255]),
+      makePixels([10, 20, 30, 255], [40, 50, 60, 255]),
+    ];
+
+    const result = analyzeSample(frames, 30);
+
+    expect(result.threshold).toBe(5);
+    expect(result.frameOffset).toBe(15);
+  });
+
+  it('suggests a high threshold and short offset for strong motion', () => {
+    const frames = [
+      makePixels([0, 0, 0, 255], [0, 0, 0, 255]),
+      makePixels([255, 255, 255, 255], [255, 255, 255, 255]),
+      makePixels([0, 0, 0, 255], [0, 0, 0, 255]),
+    ];
+
+    const result = analyzeSample(frames, 30);
+
+    expect(result.threshold).toBe(40);
+    expect(result.frameOffset).toBe(2);
   });
 });
