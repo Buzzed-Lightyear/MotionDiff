@@ -5,1124 +5,85 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MotionDiff - Temporal Motion Extraction</title>
 <script>
-  try {
-    const theme = localStorage.getItem('motiondiff-theme') || 'dark';
-    document.documentElement.setAttribute('data-theme', theme);
-  } catch {
-    document.documentElement.setAttribute('data-theme', 'dark');
-  }
+  (() => {
+    const COLOR_THEMES = {
+      green: {
+        accent: '#00ffaa',
+        accentDim: '#00b87a',
+        aurora1: 'rgba(0, 120, 80, 0.55)',
+        aurora2: 'rgba(0, 60, 120, 0.45)',
+        aurora3: 'rgba(0, 100, 60, 0.45)',
+        conic1: 'rgba(0, 255, 170, 0.06)',
+        conic2: 'rgba(0, 80, 200, 0.05)',
+        conic3: 'rgba(0, 200, 120, 0.05)',
+      },
+      violet: {
+        accent: '#c084fc',
+        accentDim: '#9333ea',
+        aurora1: 'rgba(100, 0, 180, 0.6)',
+        aurora2: 'rgba(60, 0, 120, 0.5)',
+        aurora3: 'rgba(30, 0, 80, 0.4)',
+        conic1: 'rgba(192, 132, 252, 0.07)',
+        conic2: 'rgba(80, 0, 200, 0.06)',
+        conic3: 'rgba(150, 50, 255, 0.05)',
+      },
+      amber: {
+        accent: '#fbbf24',
+        accentDim: '#d97706',
+        aurora1: 'rgba(120, 60, 0, 0.55)',
+        aurora2: 'rgba(100, 30, 0, 0.45)',
+        aurora3: 'rgba(80, 50, 0, 0.4)',
+        conic1: 'rgba(251, 191, 36, 0.07)',
+        conic2: 'rgba(200, 80, 0, 0.06)',
+        conic3: 'rgba(180, 120, 0, 0.05)',
+      },
+      cyan: {
+        accent: '#22d3ee',
+        accentDim: '#0891b2',
+        aurora1: 'rgba(0, 80, 120, 0.55)',
+        aurora2: 'rgba(0, 60, 100, 0.5)',
+        aurora3: 'rgba(0, 100, 80, 0.4)',
+        conic1: 'rgba(34, 211, 238, 0.07)',
+        conic2: 'rgba(0, 100, 180, 0.06)',
+        conic3: 'rgba(0, 180, 160, 0.05)',
+      },
+      rose: {
+        accent: '#fb7185',
+        accentDim: '#e11d48',
+        aurora1: 'rgba(120, 0, 40, 0.55)',
+        aurora2: 'rgba(100, 0, 60, 0.5)',
+        aurora3: 'rgba(80, 0, 30, 0.4)',
+        conic1: 'rgba(251, 113, 133, 0.07)',
+        conic2: 'rgba(200, 0, 80, 0.06)',
+        conic3: 'rgba(180, 50, 100, 0.05)',
+      },
+    };
+
+    const root = document.documentElement;
+    try {
+      root.setAttribute('data-theme', localStorage.getItem('motiondiff-theme') || 'dark');
+      const colorTheme = localStorage.getItem('motiondiff-color-theme') || 'green';
+      if (colorTheme === 'gradient') {
+        root.setAttribute('data-theme-color', 'gradient');
+      } else {
+        const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.green;
+        root.removeAttribute('data-theme-color');
+        root.style.setProperty('--accent', theme.accent);
+        root.style.setProperty('--accent-dim', theme.accentDim);
+        root.style.setProperty('--aurora1', theme.aurora1);
+        root.style.setProperty('--aurora2', theme.aurora2);
+        root.style.setProperty('--aurora3', theme.aurora3);
+        root.style.setProperty('--conic1', theme.conic1);
+        root.style.setProperty('--conic2', theme.conic2);
+        root.style.setProperty('--conic3', theme.conic3);
+      }
+    } catch {
+      root.setAttribute('data-theme', 'dark');
+    }
+  })();
 </script>
 <link rel="stylesheet" href="/node_modules/@simonwep/pickr/dist/themes/nano.min.css">
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --accent: #00ffaa;
-    --bg: #0f0f0f;
-    --surface: rgba(255, 255, 255, 0.04);
-    --border: rgba(255, 255, 255, 0.08);
-    --border-hover: rgba(0, 255, 170, 0.3);
-    --text: #e0e0e0;
-    --text-dim: rgba(255, 255, 255, 0.4);
-    --text-soft: rgba(255, 255, 255, 0.7);
-    --radius: 8px;
-    --font-mono: 'SF Mono', 'Fira Code', monospace;
-    --font-ui: system-ui, sans-serif;
-    --danger: #ff6c6c;
-    --gap: 12px;
-    --gap-sm: 8px;
-    --gap-lg: 20px;
-  }
-
-  [hidden] { display: none !important; }
-
-  html, body {
-    width: 100%;
-    height: 100dvh;
-    color: var(--text);
-    font-family: var(--font-ui);
-    font-size: 14px;
-    line-height: 1.5;
-    overflow: hidden;
-  }
-
-  html[data-theme='light'] {
-    --bg: #dde8f0;
-    --text: #0f1117;
-    --text-dim: rgba(0, 0, 0, 0.45);
-    --text-soft: rgba(0, 0, 0, 0.7);
-    --border: rgba(0, 0, 0, 0.08);
-    --surface: rgba(255, 255, 255, 0.52);
-    --accent: #00b87a;
-    --border-hover: rgba(0, 184, 122, 0.35);
-  }
-
-  body {
-    position: relative;
-    isolation: isolate;
-    background:
-      radial-gradient(ellipse 80% 60% at 15% 40%, rgba(60, 0, 120, 0.55) 0%, transparent 65%),
-      radial-gradient(ellipse 70% 50% at 85% 15%, rgba(0, 30, 100, 0.55) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 70% at 55% 85%, rgba(0, 80, 60, 0.45) 0%, transparent 55%),
-      #08080f;
-  }
-
-  html[data-theme='light'] body {
-    background:
-      radial-gradient(ellipse 80% 60% at 15% 40%, rgba(160, 100, 255, 0.2) 0%, transparent 65%),
-      radial-gradient(ellipse 70% 50% at 85% 15%, rgba(80, 160, 255, 0.2) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 70% at 55% 85%, rgba(0, 200, 150, 0.15) 0%, transparent 55%),
-      #dde8f0;
-  }
-
-  @keyframes aurora {
-    from { transform: rotate(0deg) scale(1.5); }
-    to { transform: rotate(360deg) scale(1.5); }
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: -50%;
-    width: 200%;
-    height: 200%;
-    background: conic-gradient(
-      from 0deg at 30% 40%,
-      transparent 0deg,
-      rgba(0, 255, 170, 0.06) 60deg,
-      transparent 120deg,
-      rgba(80, 0, 200, 0.06) 200deg,
-      transparent 260deg,
-      rgba(0, 100, 255, 0.06) 320deg,
-      transparent 360deg
-    );
-    opacity: 0.15;
-    mix-blend-mode: screen;
-    animation: aurora 120s linear infinite;
-    pointer-events: none;
-    z-index: -1;
-  }
-
-  html[data-theme='light'] body::before {
-    opacity: 0.12;
-  }
-
-  #app {
-    width: 100%;
-    height: 100dvh;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
-    gap: var(--gap-sm);
-    padding: 16px;
-  }
-
-  .app-header,
-  .timeline,
-  .controls,
-  .panels {
-    background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(20px) saturate(160%);
-    -webkit-backdrop-filter: blur(20px) saturate(160%);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    border-radius: var(--radius);
-    box-shadow:
-      0 4px 24px rgba(0, 0, 0, 0.4),
-      inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  }
-
-  html[data-theme='light'] .app-header,
-  html[data-theme='light'] .timeline,
-  html[data-theme='light'] .controls,
-  html[data-theme='light'] .panels {
-    background: rgba(255, 255, 255, 0.52);
-    backdrop-filter: blur(24px) saturate(200%);
-    -webkit-backdrop-filter: blur(24px) saturate(200%);
-    border: 1px solid rgba(255, 255, 255, 0.75);
-    border-top-color: rgba(255, 255, 255, 0.95);
-    box-shadow:
-      0 4px 24px rgba(0, 0, 0, 0.08),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  }
-
-  .app-header {
-    margin-bottom: calc(var(--gap) - var(--gap-sm));
-    padding: 12px 16px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: var(--gap-sm);
-    transition: border-color 0.3s, box-shadow 0.3s;
-  }
-
-  .app-header:hover,
-  .controls:hover {
-    border-top-color: rgba(255, 255, 255, 0.28);
-    box-shadow:
-      0 10px 30px rgba(0, 0, 0, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  }
-
-  html[data-theme='light'] .app-header:hover,
-  html[data-theme='light'] .controls:hover {
-    border-top-color: rgba(255, 255, 255, 1);
-    box-shadow:
-      0 10px 30px rgba(0, 0, 0, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 1);
-  }
-
-  .header-main {
-    min-height: 56px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--gap);
-  }
-
-  .header-brand {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .header-brand h1 {
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 24px;
-    letter-spacing: -0.03em;
-    line-height: 1;
-  }
-
-  .header-brand p {
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--gap-sm);
-    flex-wrap: wrap;
-  }
-
-  .file-wrap {
-    position: relative;
-  }
-
-  .file-wrap input[type="file"] {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    cursor: pointer;
-  }
-
-  .url-group {
-    display: flex;
-    align-items: center;
-    gap: var(--gap-sm);
-  }
-
-  .url-group input[type="text"],
-  .control-select {
-    min-height: 36px;
-    padding: 6px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: var(--radius);
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--text);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    outline: none;
-    transition: all 0.18s ease;
-  }
-
-  html[data-theme='light'] .url-group input[type="text"],
-  html[data-theme='light'] .control-select {
-    background: rgba(255, 255, 255, 0.6);
-    border-color: rgba(255, 255, 255, 0.8);
-    color: rgba(0, 0, 0, 0.7);
-  }
-
-  .url-group input[type="text"] {
-    width: 240px;
-  }
-
-  .url-group input[type="text"]:focus,
-  .control-select:focus {
-    border-color: var(--border-hover);
-  }
-
-  .url-group input[type="text"]::placeholder {
-    color: var(--text-dim);
-  }
-
-  .btn-ctrl,
-  .file-btn,
-  .source-btn,
-  .icon-btn {
-    min-height: 36px;
-    padding: 5px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: var(--radius);
-    background: rgba(255, 255, 255, 0.05);
-    color: rgba(255, 255, 255, 0.7);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.18s ease;
-    white-space: nowrap;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-  }
-
-  html[data-theme='light'] .btn-ctrl,
-  html[data-theme='light'] .file-btn,
-  html[data-theme='light'] .source-btn,
-  html[data-theme='light'] .icon-btn {
-    background: rgba(255, 255, 255, 0.6);
-    border-color: rgba(255, 255, 255, 0.8);
-    color: rgba(0, 0, 0, 0.7);
-  }
-
-  .file-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .btn-ctrl:hover,
-  .file-wrap:hover .file-btn,
-  .source-btn:hover,
-  .icon-btn:hover {
-    background: rgba(255, 255, 255, 0.09);
-    border-color: rgba(0, 255, 170, 0.4);
-    color: #fff;
-  }
-
-  html[data-theme='light'] .btn-ctrl:hover,
-  html[data-theme='light'] .file-wrap:hover .file-btn,
-  html[data-theme='light'] .source-btn:hover,
-  html[data-theme='light'] .icon-btn:hover {
-    color: var(--text);
-  }
-
-  .btn-primary {
-    min-height: 36px;
-    padding: 5px 12px;
-    border: none;
-    border-radius: var(--radius);
-    background: rgba(0, 255, 170, 0.9);
-    color: #0f0f0f;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.18s ease;
-    white-space: nowrap;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    box-shadow: 0 2px 16px rgba(0, 255, 170, 0.3);
-  }
-
-  .btn-primary:hover {
-    background: #00ffaa;
-    box-shadow: 0 4px 20px rgba(0, 255, 170, 0.5);
-  }
-
-  html[data-theme='light'] .btn-primary {
-    background: rgba(0, 200, 130, 0.9);
-    color: #fff;
-  }
-
-  .preset-btn {
-    min-height: 34px;
-    padding: 5px 12px;
-    border-radius: var(--radius);
-    border: 1px solid rgba(0, 255, 170, 0.25);
-    background: rgba(0, 255, 170, 0.08);
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.18s ease;
-  }
-
-  .preset-btn:hover,
-  .preset-btn.is-active {
-    background: rgba(0, 255, 170, 0.15);
-    box-shadow: 0 0 12px rgba(0, 255, 170, 0.2);
-  }
-
-  html[data-theme='light'] .preset-btn {
-    background: rgba(0, 184, 122, 0.12);
-    border-color: rgba(0, 184, 122, 0.25);
-  }
-
-  .btn-ctrl.active {
-    border-color: var(--accent);
-    background: rgba(0, 255, 170, 0.15);
-    color: var(--accent);
-    box-shadow: 0 0 18px rgba(0, 255, 170, 0.15);
-    font-weight: 600;
-  }
-
-  .btn-ctrl.recording {
-    border-color: var(--danger);
-    background: var(--danger);
-    color: #13090a;
-    font-weight: 700;
-  }
-
-  .icon-btn {
-    min-width: 36px;
-    padding: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 15px;
-  }
-
-  .status-msg {
-    min-height: 16px;
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.03em;
-    opacity: 0;
-    transition: opacity 0.2s ease;
-  }
-
-  .status-msg.visible { opacity: 1; }
-  .status-msg.success { color: var(--accent); }
-  .status-msg.error { color: var(--danger); }
-
-  .viewport-shell {
-    min-height: calc(100dvh - 56px - 160px);
-    min-height: 0;
-  }
-
-  .panels {
-    height: 100%;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    overflow: hidden;
-  }
-
-  .panel {
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .panel + .panel {
-    border-left: 1px solid var(--border);
-  }
-
-  .panel-label {
-    padding: 8px 14px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-  }
-
-  html[data-theme='light'] .panel-label {
-    color: var(--text);
-  }
-
-  .panel-label .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: var(--accent);
-    opacity: 0;
-    transition: opacity 0.2s;
-  }
-
-  .panel-label .dot.active { opacity: 1; }
-
-  .panel-body {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.48);
-  }
-
-  html[data-theme='light'] .panel-body {
-    background: rgba(255, 255, 255, 0.28);
-  }
-
-  .panel-body video,
-  .panel-body canvas {
-    width: 100%;
-    height: 100%;
-    max-width: 100%;
-    display: block;
-    object-fit: contain;
-  }
-
-  .placeholder {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    pointer-events: none;
-  }
-
-  .placeholder svg {
-    opacity: 0.28;
-  }
-
-  .timeline {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gap-sm);
-    padding: 12px 16px;
-  }
-
-  .timeline-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--gap);
-  }
-
-  .timeline-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--gap-sm);
-  }
-
-  .timeline-actions .btn-ctrl {
-    min-width: 42px;
-    padding-inline: 10px;
-  }
-
-  .timeline-actions .btn-play {
-    min-width: 56px;
-  }
-
-  .timeline-meta {
-    display: flex;
-    align-items: center;
-    gap: var(--gap-sm);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-  }
-
-  .frame-counter {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-
-  .timeline-meta__label,
-  .frame-counter__token {
-    color: var(--text-dim);
-  }
-
-  .frame-counter__numbers {
-    color: var(--accent);
-  }
-
-  .timeline-scrub {
-    width: 100%;
-  }
-
-  .timeline-scrub input[type="range"] {
-    width: 100%;
-  }
-
-  .controls {
-    min-height: 148px;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 16px;
-    padding: 16px 20px;
-    overflow: hidden;
-    transition: border-color 0.3s, box-shadow 0.3s;
-  }
-
-  .tab-state {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .control-tabs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: var(--gap-sm);
-  }
-
-  .tab-btn {
-    padding: 0 10px 6px;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: rgba(255, 255, 255, 0.35);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: color 0.2s, border-color 0.2s;
-  }
-
-  html[data-theme='light'] .tab-btn {
-    color: rgba(0, 0, 0, 0.35);
-  }
-
-  #tab-source:checked ~ .control-tabs label[for="tab-source"],
-  #tab-algorithm:checked ~ .control-tabs label[for="tab-algorithm"],
-  #tab-display:checked ~ .control-tabs label[for="tab-display"],
-  #tab-export:checked ~ .control-tabs label[for="tab-export"] {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
-    text-shadow: 0 0 12px rgba(0, 255, 170, 0.4);
-  }
-
-  .control-pages {
-    min-height: 0;
-  }
-
-  .control-page {
-    display: none;
-    height: 100%;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  #tab-source:checked ~ .control-pages .control-page-source,
-  #tab-algorithm:checked ~ .control-pages .control-page-algorithm,
-  #tab-display:checked ~ .control-pages .control-page-display,
-  #tab-export:checked ~ .control-pages .control-page-export {
-    display: flex;
-  }
-
-  .page-row {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--gap);
-    flex-wrap: wrap;
-  }
-
-  .preset-row {
-    align-items: center;
-  }
-
-  .presets-label,
-  .section-kicker,
-  .performance-label {
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  #presetClips {
-    display: flex;
-    gap: var(--gap-sm);
-    flex-wrap: wrap;
-  }
-
-  .preset-select {
-    min-width: 240px;
-  }
-
-  .control-grid {
-    display: grid;
-    gap: var(--gap);
-    width: 100%;
-  }
-
-  .control-grid-algorithm {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .ctrl {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .ctrl-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-  }
-
-  .ctrl-label {
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .ctrl-val {
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    transform-origin: center;
-  }
-
-  .ctrl-group {
-    justify-content: center;
-    padding-top: 4px;
-  }
-
-  .ctrl-group > .ctrl-label,
-  .performance-label {
-    margin-bottom: 8px;
-  }
-
-  .ctrl-inline-btn {
-    align-self: flex-start;
-    min-width: 96px;
-  }
-
-  .toggle-row {
-    display: flex;
-    gap: var(--gap-sm);
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  .color-row {
-    display: flex;
-    gap: var(--gap);
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  .swatch-control {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .swatch-label {
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  .performance-block {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gap-sm);
-  }
-
-  .performance-fields {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(180px, 240px));
-    gap: var(--gap-sm);
-  }
-
-  .performance-status {
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .color-swatch.pcr-button,
-  .color-swatch .pcr-button {
-    width: 28px;
-    min-width: 28px;
-    height: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 4px;
-    box-shadow: none;
-  }
-
-  .color-swatch.pcr-button:hover,
-  .color-swatch .pcr-button:hover {
-    border-color: rgba(0, 255, 170, 0.5);
-  }
-
-  .color-swatch.pcr-button::before,
-  .color-swatch .pcr-button::before {
-    border-radius: 3px;
-    box-shadow: none;
-  }
-
-  .pcr-app[data-theme='nano'] {
-    background: rgba(17, 17, 20, 0.9);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow:
-      0 18px 36px rgba(0, 0, 0, 0.35),
-      inset 0 1px 0 rgba(255, 255, 255, 0.07);
-    color: var(--text);
-    z-index: 50;
-  }
-
-  html[data-theme='light'] .pcr-app[data-theme='nano'] {
-    background: rgba(255, 255, 255, 0.92);
-  }
-
-  .pcr-app .pcr-interaction .pcr-save {
-    background: var(--accent);
-    color: #08110f;
-    box-shadow: none;
-  }
-
-  input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 2px;
-    border-radius: 999px;
-    background:
-      linear-gradient(var(--accent), var(--accent)) no-repeat,
-      rgba(255, 255, 255, 0.12);
-    background-size: 0% 100%, 100% 100%;
-    cursor: pointer;
-    outline: none;
-  }
-
-  input[type="range"]::-webkit-slider-runnable-track {
-    height: 2px;
-    background: transparent;
-  }
-
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
-    margin-top: -7px;
-    border-radius: 50%;
-    background: var(--accent);
-    border: 2px solid rgba(0, 0, 0, 0.4);
-    box-shadow: 0 0 0 3px rgba(0, 255, 170, 0.15);
-    cursor: grab;
-    transition: box-shadow 0.15s, transform 0.15s;
-  }
-
-  input[type="range"]::-webkit-slider-thumb:hover {
-    box-shadow: 0 0 0 5px rgba(0, 255, 170, 0.25);
-    transform: scale(1.1);
-  }
-
-  input[type="range"]::-webkit-slider-thumb:active {
-    cursor: grabbing;
-    transform: scale(1.15);
-    box-shadow: 0 0 0 6px rgba(0, 255, 170, 0.3);
-  }
-
-  input[type="range"]::-moz-range-track {
-    height: 2px;
-    border: 0;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.15);
-  }
-
-  input[type="range"]::-moz-range-progress {
-    height: 2px;
-    border-radius: 999px;
-    background: var(--accent);
-  }
-
-  input[type="range"]::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--accent);
-    border: 2px solid rgba(0, 0, 0, 0.4);
-    box-shadow: 0 0 0 3px rgba(0, 255, 170, 0.15);
-    cursor: grab;
-    transition: box-shadow 0.15s, transform 0.15s;
-  }
-
-  input[type="range"]::-moz-range-thumb:hover {
-    box-shadow: 0 0 0 5px rgba(0, 255, 170, 0.25);
-    transform: scale(1.1);
-  }
-
-  input[type="range"]::-moz-range-thumb:active {
-    cursor: grabbing;
-    transform: scale(1.15);
-    box-shadow: 0 0 0 6px rgba(0, 255, 170, 0.3);
-  }
-
-  .help-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 90;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.25s ease;
-  }
-
-  .help-backdrop.open {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  .help-drawer {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 380px;
-    max-width: 100vw;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 18px 18px 22px;
-    background: rgba(13, 13, 13, 0.92);
-    backdrop-filter: blur(22px) saturate(160%);
-    -webkit-backdrop-filter: blur(22px) saturate(160%);
-    border-left: 1px solid var(--border);
-    transform: translateX(100%);
-    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    overflow-y: auto;
-  }
-
-  .help-backdrop.open .help-drawer {
-    transform: translateX(0);
-  }
-
-  html[data-theme='light'] .help-drawer {
-    background: rgba(255, 255, 255, 0.78);
-  }
-
-  .help-drawer-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .help-kicker {
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  .help-title {
-    font-size: 18px;
-    line-height: 1.1;
-  }
-
-  .help-content {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .help-content h2 {
-    margin-top: 24px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .help-content h3 {
-    margin-top: 16px;
-    color: var(--text);
-    font-size: 12px;
-  }
-
-  .help-content p {
-    color: var(--text-soft);
-    font-size: 13px;
-    line-height: 1.6;
-  }
-
-  .help-content table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-  }
-
-  .help-content th,
-  .help-content td {
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--border);
-    text-align: left;
-    vertical-align: top;
-  }
-
-  .help-content code,
-  .help-code {
-    display: inline-block;
-    padding: 1px 4px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.06);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .help-code {
-    display: block;
-    padding: 8px 10px;
-    white-space: normal;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    @keyframes tabFadeIn {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    @keyframes valuePop {
-      0% { transform: scale(1); }
-      40% { transform: scale(1.18); color: var(--accent); }
-      100% { transform: scale(1); }
-    }
-
-    @keyframes loadPulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(0, 255, 170, 0); }
-      50% { box-shadow: 0 0 0 4px rgba(0, 255, 170, 0.3); }
-    }
-
-    #tab-source:checked ~ .control-pages .control-page-source,
-    #tab-algorithm:checked ~ .control-pages .control-page-algorithm,
-    #tab-display:checked ~ .control-pages .control-page-display,
-    #tab-export:checked ~ .control-pages .control-page-export {
-      animation: tabFadeIn 0.18s ease;
-    }
-
-    .ctrl-val.popping {
-      animation: valuePop 0.3s ease;
-    }
-
-    .preset-btn.loading {
-      animation: loadPulse 1.2s ease-in-out infinite;
-    }
-  }
-
-  @media (max-width: 980px) {
-    .header-main {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .header-actions {
-      justify-content: flex-start;
-    }
-
-    .url-group input[type="text"] {
-      width: 100%;
-      min-width: 220px;
-    }
-
-    .control-grid-algorithm {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-
-  @media (max-width: 700px) {
-    html, body {
-      height: auto;
-      min-height: 100dvh;
-      overflow: auto;
-    }
-
-    #app {
-      height: auto;
-      min-height: 100dvh;
-      grid-template-rows: auto auto auto auto;
-      overflow: visible;
-      padding: 16px;
-    }
-
-    .panels {
-      grid-template-columns: 1fr;
-    }
-
-    .panel + .panel {
-      border-left: 0;
-      border-top: 1px solid var(--border);
-    }
-
-    .panel-body {
-      min-height: 220px;
-    }
-
-    .timeline-row,
-    .page-row,
-    .toggle-row,
-    .header-actions {
-      align-items: stretch;
-    }
-
-    .timeline-row {
-      flex-direction: column;
-    }
-
-    .timeline-meta {
-      flex-wrap: wrap;
-      justify-content: space-between;
-      width: 100%;
-    }
-
-    .control-tabs {
-      flex-wrap: wrap;
-    }
-
-    .control-grid-algorithm,
-    .performance-fields {
-      grid-template-columns: 1fr;
-    }
-
-    .controls {
-      min-height: auto;
-      padding: 16px;
-    }
-
-    .help-drawer {
-      width: 100vw;
-    }
-  }
-</style>
+<link rel="stylesheet" href="/src/styles/main.css">
 </head>
 <body>
 <div id="app">
@@ -1134,31 +95,52 @@
       </div>
 
       <div class="header-actions">
-        <div class="file-wrap">
-          <div class="file-btn">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M8 10V3m0 0L5 6m3-3l3 3"/>
-              <path d="M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2"/>
-            </svg>
-            Open File
-          </div>
-          <input type="file" id="fileInput" accept="video/*">
+        <div id="colorSwatches" class="color-swatches">
+          <button class="swatch" data-color="green" style="background:#00ffaa" title="Green" aria-label="Green color theme"></button>
+          <button class="swatch" data-color="violet" style="background:#c084fc" title="Violet" aria-label="Violet color theme"></button>
+          <button class="swatch" data-color="amber" style="background:#fbbf24" title="Amber" aria-label="Amber color theme"></button>
+          <button class="swatch" data-color="cyan" style="background:#22d3ee" title="Cyan" aria-label="Cyan color theme"></button>
+          <button class="swatch" data-color="rose" style="background:#fb7185" title="Rose" aria-label="Rose color theme"></button>
+          <button class="swatch" data-color="gradient" title="Gradient" aria-label="Gradient color theme" style="background: conic-gradient(#00ffaa 0deg, #c084fc 72deg, #fbbf24 144deg, #22d3ee 216deg, #fb7185 288deg, #00ffaa 360deg)"></button>
         </div>
-
-        <div class="url-group">
-          <input type="text" id="urlInput" placeholder="Paste video URL...">
-          <button class="btn-primary" id="loadUrlBtn">Load</button>
-        </div>
-
-        <button class="source-btn" id="btnWebcam" hidden>Webcam</button>
-        <button class="source-btn" id="btnScreen" hidden>Screen</button>
         <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">&#9790;</button>
         <button class="icon-btn" id="btnHelp" aria-label="Open help">?</button>
       </div>
+    </div> 
+  </header>
+
+  <section class="source-bar" id="sourceBar">
+    <div class="source-row">
+      <div class="file-wrap">
+        <div class="file-btn">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 10V3m0 0L5 6m3-3l3 3"/>
+            <path d="M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2"/>
+          </svg>
+          Open File
+        </div>
+        <input type="file" id="fileInput" accept="video/*">
+      </div>
+
+      <div class="url-group">
+        <input type="text" id="urlInput" placeholder="Paste video URL...">
+        <button class="btn-primary" id="loadUrlBtn">Load</button>
+      </div>
+
+      <button class="source-btn" id="btnWebcam" hidden>Webcam</button>
+      <button class="source-btn" id="btnScreen" hidden>Screen</button>
     </div>
 
-    <div class="status-msg" id="statusMsg" aria-live="polite"></div>
-  </header>
+    <div class="source-row">
+      <span class="presets-label">Preset Clips</span>
+      <div id="presetClips">
+        <button class="preset-btn" id="presetTrees" data-url="https://videos.pexels.com/video-files/1254570/1254570-hd_1920_1080_30fps.mp4">Trees in Wind</button>
+        <button class="preset-btn" id="presetRiver" data-url="https://videos.pexels.com/video-files/6981415/6981415-hd_1920_1080_25fps.mp4">Flowing River</button>
+        <button class="preset-btn" id="presetSunset" data-url="https://videos.pexels.com/video-files/5646694/5646694-hd_1920_1080_30fps.mp4">Sunset Timelapse</button>
+      </div>
+      <div class="status-msg" id="statusMsg" aria-live="polite"></div>
+    </div>
+  </section>
 
   <main class="viewport-shell">
     <div class="panels">
@@ -1221,94 +203,67 @@
   </section>
 
   <section class="controls control-panel">
-    <input class="tab-state" type="radio" name="control-tab" id="tab-source">
-    <input class="tab-state" type="radio" name="control-tab" id="tab-algorithm" checked>
-    <input class="tab-state" type="radio" name="control-tab" id="tab-display">
-    <input class="tab-state" type="radio" name="control-tab" id="tab-export">
-
-    <div class="control-tabs" role="tablist" aria-label="Control groups">
-      <label class="tab-btn" for="tab-source">Source</label>
-      <label class="tab-btn" for="tab-algorithm">Algorithm</label>
-      <label class="tab-btn" for="tab-display">Display</label>
-      <label class="tab-btn" for="tab-export">Export</label>
+    <div class="looks-row">
+      <span class="section-title section-label">Looks</span>
+      <div class="looks-controls">
+        <select id="presetConfigSelect" class="control-select preset-select">
+          <option value="">Select parameter preset...</option>
+        </select>
+        <button class="btn-ctrl" id="autoConfigBtn">Auto</button>
+        <button class="btn-ctrl" id="savePresetBtn">Save current</button>
+        <button class="btn-ctrl" id="deletePresetBtn" disabled>Delete</button>
+      </div>
     </div>
 
-    <div class="control-pages">
-      <section class="control-page control-page-source">
-        <div class="page-row preset-row">
-          <span class="presets-label">Preset Clips</span>
-          <div id="presetClips">
-            <button class="preset-btn" data-url="https://videos.pexels.com/video-files/1254570/1254570-hd_1920_1080_30fps.mp4">Trees in Wind</button>
-            <button class="preset-btn" data-url="https://videos.pexels.com/video-files/6981415/6981415-hd_1920_1080_25fps.mp4">Flowing River</button>
-            <button class="preset-btn" data-url="https://videos.pexels.com/video-files/5646694/5646694-hd_1920_1080_30fps.mp4">Sunset Timelapse</button>
-          </div>
+    <div class="control-sections">
+      <section class="control-section">
+        <span class="section-title section-label">Algorithm</span>
+
+        <div class="segment-control" id="btnAlgo" role="group" aria-label="Algorithm mode">
+          <button class="segment-btn" type="button" data-algorithm="posy">Posy</button>
+          <button class="segment-btn" type="button" data-algorithm="raw">Raw Diff</button>
         </div>
 
-        <div class="page-row">
-          <div class="ctrl" style="min-width: 260px;">
-            <label class="ctrl-label" for="presetConfigSelect">Looks</label>
-            <select id="presetConfigSelect" class="control-select preset-select">
-              <option value="">Select parameter preset...</option>
-            </select>
-          </div>
-          <button class="btn-ctrl" id="autoConfigBtn">Auto</button>
-          <button class="btn-ctrl" id="savePresetBtn">Save current</button>
-          <button class="btn-ctrl" id="deletePresetBtn" disabled>Delete</button>
-        </div>
-      </section>
-
-      <section class="control-page control-page-algorithm">
-        <div class="control-grid control-grid-algorithm">
-          <div class="ctrl">
-            <div class="ctrl-head">
-              <span class="ctrl-label">Offset</span>
-              <span class="ctrl-val" id="valOffset">5f</span>
-            </div>
+        <div class="slider-grid">
+          <div class="slider-cell">
+            <span class="ctrl-label">Offset</span>
             <input type="range" id="sliderOffset" min="1" max="90" value="5">
-            <button class="btn-ctrl active ctrl-inline-btn" id="btnAlgo">Posy</button>
+            <span class="ctrl-val" id="valOffset">5f</span>
           </div>
 
-          <div class="ctrl">
-            <div class="ctrl-head">
-              <span class="ctrl-label">Threshold</span>
-              <span class="ctrl-val" id="valThreshold">10</span>
-            </div>
+          <div class="slider-cell">
+            <span class="ctrl-label">Threshold</span>
             <input type="range" id="sliderThreshold" min="0" max="60" value="10">
+            <span class="ctrl-val" id="valThreshold">10</span>
           </div>
 
-          <div class="ctrl">
-            <div class="ctrl-head">
-              <span class="ctrl-label">Trail</span>
-              <span class="ctrl-val" id="valTrail">5f</span>
-            </div>
+          <div class="slider-cell">
+            <span class="ctrl-label">Trail</span>
             <input type="range" id="sliderTrail" min="1" max="20" value="5">
+            <span class="ctrl-val" id="valTrail">5f</span>
           </div>
 
-          <div class="ctrl">
-            <div class="ctrl-head">
-              <span class="ctrl-label">RGB Spread</span>
-              <span class="ctrl-val" id="valSpread">0f</span>
-            </div>
+          <div class="slider-cell">
+            <span class="ctrl-label">RGB Spread</span>
             <input type="range" id="sliderSpread" min="0" max="5" value="0">
+            <span class="ctrl-val" id="valSpread">0f</span>
           </div>
         </div>
 
-        <div class="page-row">
-          <div class="ctrl ctrl-group" id="rgbTintGroup" hidden>
-            <span class="ctrl-label">RGB Tints</span>
-            <div class="color-row">
-              <div class="swatch-control">
-                <span class="swatch-label">R</span>
-                <div class="color-swatch" id="rgbTintR" aria-label="Red tint swatch"></div>
-              </div>
-              <div class="swatch-control">
-                <span class="swatch-label">G</span>
-                <div class="color-swatch" id="rgbTintG" aria-label="Green tint swatch"></div>
-              </div>
-              <div class="swatch-control">
-                <span class="swatch-label">B</span>
-                <div class="color-swatch" id="rgbTintB" aria-label="Blue tint swatch"></div>
-              </div>
+        <div class="swatch-panel" id="rgbTintGroup" hidden>
+          <span class="subsection-label">RGB Tints</span>
+          <div class="color-row">
+            <div class="swatch-control">
+              <span class="swatch-label">R</span>
+              <div class="color-swatch" id="rgbTintR" aria-label="Red tint swatch"></div>
+            </div>
+            <div class="swatch-control">
+              <span class="swatch-label">G</span>
+              <div class="color-swatch" id="rgbTintG" aria-label="Green tint swatch"></div>
+            </div>
+            <div class="swatch-control">
+              <span class="swatch-label">B</span>
+              <div class="color-swatch" id="rgbTintB" aria-label="Blue tint swatch"></div>
             </div>
           </div>
         </div>
@@ -1316,70 +271,89 @@
         <div class="performance-block">
           <span class="performance-label">Performance</span>
           <div class="performance-fields">
-            <div class="ctrl">
-              <label class="ctrl-label" for="selectResolution">Resolution</label>
-              <select id="selectResolution" class="control-select">
-                <option value="320">320px</option>
-                <option value="480">480px</option>
-                <option value="640" selected>640px</option>
-                <option value="1280">1280px</option>
-                <option value="1920">1920px</option>
-              </select>
-            </div>
+            <select id="selectResolution" class="control-select" aria-label="Processing resolution">
+              <option value="320">320px</option>
+              <option value="480">480px</option>
+              <option value="640" selected>640px</option>
+              <option value="1280">1280px</option>
+              <option value="1920">1920px</option>
+            </select>
 
-            <div class="ctrl">
-              <label class="ctrl-label" for="selectFpsCap">FPS Cap</label>
-              <select id="selectFpsCap" class="control-select">
-                <option value="max" selected>Max</option>
-                <option value="60">60</option>
-                <option value="30">30</option>
-                <option value="24">24</option>
-                <option value="15">15</option>
-              </select>
-            </div>
+            <select id="selectFpsCap" class="control-select" aria-label="Processing FPS cap">
+              <option value="max" selected>Src</option>
+              <option value="60">60</option>
+              <option value="30">30</option>
+              <option value="24">24</option>
+              <option value="15">15</option>
+            </select>
           </div>
           <div class="performance-status" id="performanceStatus">Processing at 640px &middot; uncapped</div>
         </div>
       </section>
 
-      <section class="control-page control-page-display">
-        <div class="page-row toggle-row">
-          <button class="btn-ctrl" id="btnDisplay">Mode: Overlay</button>
-          <button class="btn-ctrl" id="btnBlur">Blur: Off</button>
-          <button class="btn-ctrl" id="btnAgeColor">Color Age: Off</button>
+      <section class="control-section">
+        <span class="section-title section-label">Display</span>
+
+        <div class="mode-group">
+          <span class="ctrl-label">Mode</span>
+          <div class="segment-control" id="btnDisplay" role="group" aria-label="Display mode">
+            <button class="segment-btn" type="button" data-mode="diff">Diff</button>
+            <button class="segment-btn" type="button" data-mode="overlay">Overlay</button>
+            <button class="segment-btn" type="button" data-mode="glow">Glow</button>
+          </div>
         </div>
 
-        <div class="page-row">
-          <div class="ctrl ctrl-group" id="ageGradientGroup" hidden>
-            <span class="ctrl-label">Age Gradient</span>
-            <div class="color-row">
-              <div class="swatch-control">
-                <span class="swatch-label">New</span>
-                <div class="color-swatch" id="ageColorNew" aria-label="New motion color"></div>
-              </div>
-              <div class="swatch-control">
-                <span class="swatch-label">Old</span>
-                <div class="color-swatch" id="ageColorOld" aria-label="Old motion color"></div>
-              </div>
+        <div class="toggle-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="btnBlur">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Blur</span>
+          </label>
+
+          <label class="toggle-switch">
+            <input type="checkbox" id="btnAgeColor">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Color Age</span>
+          </label>
+        </div>
+
+        <div class="age-gradient-panel" id="ageGradientGroup" hidden>
+          <span class="subsection-label">Age Gradient</span>
+          <div class="color-row">
+            <div class="swatch-control">
+              <span class="swatch-label">New</span>
+              <div class="color-swatch" id="ageColorNew" aria-label="New motion color"></div>
+            </div>
+            <div class="swatch-control">
+              <span class="swatch-label">Old</span>
+              <div class="color-swatch" id="ageColorOld" aria-label="Old motion color"></div>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="control-page control-page-export">
-        <div class="page-row">
-          <div class="ctrl" style="min-width: 220px;">
-            <label class="ctrl-label" for="playbackRateSelect">Playback Speed</label>
-            <select id="playbackRateSelect" class="control-select" disabled>
-              <option value="0.25">0.25x</option>
-              <option value="0.5">0.5x</option>
-              <option value="1" selected>1x</option>
-              <option value="1.5">1.5x</option>
-              <option value="2">2x</option>
-            </select>
+      <section class="control-section">
+        <span class="section-title section-label">Output</span>
+
+        <div class="speed-group">
+          <span class="ctrl-label">Speed</span>
+          <div class="segment-control" id="playbackRateControl" role="group" aria-label="Playback speed">
+            <button class="segment-btn" type="button" data-rate="0.25">0.25x</button>
+            <button class="segment-btn" type="button" data-rate="0.5">0.5x</button>
+            <button class="segment-btn" type="button" data-rate="1">1x</button>
+            <button class="segment-btn" type="button" data-rate="1.5">1.5x</button>
+            <button class="segment-btn" type="button" data-rate="2">2x</button>
           </div>
-          <button class="btn-ctrl" id="btnRecord">Record</button>
+          <select id="playbackRateSelect" class="control-select" hidden disabled>
+            <option value="0.25">0.25x</option>
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
         </div>
+
+        <button class="btn-ctrl btn-record" id="btnRecord">Record</button>
       </section>
     </div>
   </section>
@@ -1401,3 +375,4 @@
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>
+

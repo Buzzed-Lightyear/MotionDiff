@@ -6,11 +6,9 @@ import { analyzeSample } from './core/analyze.js';
 import { initControls } from './ui/controls.js';
 import { initHelp } from './ui/help.js';
 import { initPresets } from './ui/presets.js';
+import { initColorThemes } from './ui/theme.js';
 import { initTimeline } from './ui/timeline.js';
 import { setStatus } from './ui/status.js';
-
-const MODE_ORDER = ['diff', 'overlay', 'glow'];
-const MODE_LABELS = { diff: 'Diff', overlay: 'Overlay', glow: 'Glow' };
 
 const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
@@ -37,13 +35,11 @@ let fpsWindowStart = 0;
 let skippedFrameCount = 0;
 const recorder = new CanvasRecorder(canvas);
 initHelp();
+initColorThemes();
 
-function cycleMode() {
-  const idx = MODE_ORDER.indexOf(currentMode);
-  currentMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
-  // Sync mode to pipeline for WebGL composite
+function setDisplayMode(mode) {
+  currentMode = mode;
   pipeline.setMode(currentMode);
-  return MODE_LABELS[currentMode];
 }
 
 const controls = initControls({
@@ -51,9 +47,7 @@ const controls = initControls({
   onParamChange: handleParamChange,
   onFileLoad: handleFileLoad,
   onUrlLoad: handleUrlLoad,
-  onDisplayCycle: () => cycleMode(),
-  onAlgorithmToggle: () => {},
-  onBlurToggle: () => {},
+  onDisplayModeChange: setDisplayMode,
   onAutoConfigure: handleAutoConfigure,
   onWebcamLoad: handleWebcamLoad,
   onScreenLoad: handleScreenLoad,

@@ -30,7 +30,7 @@ uniform sampler2D uOldB;
 uniform vec3 uTintR;
 uniform vec3 uTintG;
 uniform vec3 uTintB;
-uniform float uThreshold;   // 0–60 mapped to 0.0–0.235
+uniform float uThreshold;   // 0-60 mapped to 0.0-0.235
 uniform int uAlgorithm;     // 0 = Posy, 1 = Raw Diff
 
 in vec2 vUV;
@@ -486,7 +486,7 @@ export class WebGLRenderer {
     gl.uniform1i(gl.getUniformLocation(prog, 'uOldB'), 3);
 
     // Set uniforms
-    // threshold: 0–60 in UI → normalize to 0.0–0.235 range (60/255 ≈ 0.235)
+    // threshold: 0-60 in UI → normalize to 0.0-0.235 range (60/255 ≈ 0.235)
     gl.uniform1f(gl.getUniformLocation(prog, 'uThreshold'), params.threshold / 255.0);
     gl.uniform1i(gl.getUniformLocation(prog, 'uAlgorithm'), params.algorithm === 'posy' ? 0 : 1);
     gl.uniform3fv(gl.getUniformLocation(prog, 'uTintR'), hexToVec3(params.rgbTintR, '#ff0000'));

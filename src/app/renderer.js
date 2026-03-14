@@ -40,10 +40,10 @@ function renderOverlay(currentFrame, accumulated, ctx, w, h, algorithm, ageColor
   if (algorithm === 'posy' && !ageColorEnabled) {
     for (let i = 0; i < len; i += 4) {
       /**
-       * Convert Posy diff from gray-centered space back to 0–255 motion
+       * Convert Posy diff from gray-centered space back to 0-255 motion
        * magnitude for screen blending. In Posy output, 128 = static;
        * deviation from 128 encodes motion. The useful deviation range
-       * is roughly ±64, so multiplying by 4 maps it to ~0–255.
+       * is roughly ±64, so multiplying by 4 maps it to ~0-255.
        */
       const motR = Math.min(255, Math.abs(diff[i]     - 128) * 4);
       const motG = Math.min(255, Math.abs(diff[i + 1] - 128) * 4);

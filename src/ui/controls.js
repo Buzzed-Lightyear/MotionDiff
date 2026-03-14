@@ -57,9 +57,7 @@ export function initControls({
   onParamChange,
   onFileLoad,
   onUrlLoad,
-  onDisplayCycle,
-  onAlgorithmToggle,
-  onBlurToggle,
+  onDisplayModeChange,
   onAutoConfigure,
   onWebcamLoad,
   onScreenLoad,
@@ -99,6 +97,8 @@ export function initControls({
   const btnBlur = document.getElementById('btnBlur');
   const btnAgeColor = document.getElementById('btnAgeColor');
   const btnDisplay = document.getElementById('btnDisplay');
+  const playbackRateControl = document.getElementById('playbackRateControl');
+  const playbackRateSelect = document.getElementById('playbackRateSelect');
   const btnRecord = document.getElementById('btnRecord');
 
   const dotOriginal = document.getElementById('dotOriginal');
@@ -106,6 +106,10 @@ export function initControls({
   const placeholderOriginal = document.getElementById('placeholderOriginal');
   const placeholderDiff = document.getElementById('placeholderDiff');
   const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
+  const algorithmButtons = Array.from(btnAlgo?.querySelectorAll('[data-algorithm]') || []);
+  const displayButtons = Array.from(btnDisplay?.querySelectorAll('[data-mode]') || []);
+  const playbackRateButtons = Array.from(playbackRateControl?.querySelectorAll('[data-rate]') || []);
+  const ageToggleWrap = btnAgeColor?.closest('.toggle-switch');
 
   const state = {
     frameOffset: 5,
@@ -172,7 +176,10 @@ export function initControls({
     const presetButtons = document.querySelectorAll('#presetClips .preset-btn');
     activePresetButton = button;
     presetButtons.forEach((item) => {
-      item.classList.toggle('is-active', item === button);
+      const isActive = item === button;
+      item.classList.toggle('is-active', isActive);
+      if (isActive) item.setAttribute('data-active', 'true');
+      else item.removeAttribute('data-active');
     });
     updatePresetLoadingState();
   }
@@ -239,8 +246,10 @@ export function initControls({
   function updateAgeColorVisibility() {
     const algorithmAllowsAgeColor = state.algorithm === 'posy';
     if (btnAgeColor) {
-      btnAgeColor.hidden = !algorithmAllowsAgeColor;
       btnAgeColor.disabled = !algorithmAllowsAgeColor;
+    }
+    if (ageToggleWrap) {
+      ageToggleWrap.hidden = !algorithmAllowsAgeColor;
     }
 
     const showGradient = algorithmAllowsAgeColor && state.ageColorEnabled;
@@ -259,26 +268,25 @@ export function initControls({
 
   function setAlgorithm(algorithm, notify = true) {
     state.algorithm = algorithm;
-    const isPosy = algorithm === 'posy';
-    btnAlgo.textContent = isPosy ? 'Posy' : 'Raw Diff';
-    btnAlgo.classList.toggle('active', isPosy);
+    algorithmButtons.forEach((button) => {
+      const isActive = button.dataset.algorithm === algorithm;
+      button.classList.toggle('active', isActive);
+      if (isActive) button.setAttribute('data-active', 'true');
+      else button.removeAttribute('data-active');
+    });
     updateAgeColorVisibility();
     if (notify) emitParamChange({ algorithm });
   }
 
   function setBlurEnabled(enabled, notify = true) {
     state.blurEnabled = Boolean(enabled);
-    btnBlur.textContent = `Blur: ${state.blurEnabled ? 'On' : 'Off'}`;
-    btnBlur.classList.toggle('active', state.blurEnabled);
+    if (btnBlur) btnBlur.checked = state.blurEnabled;
     if (notify) emitParamChange({ blurEnabled: state.blurEnabled });
   }
 
   function setAgeColorEnabled(enabled, notify = true) {
     state.ageColorEnabled = Boolean(enabled);
-    if (btnAgeColor) {
-      btnAgeColor.textContent = `Color Age: ${state.ageColorEnabled ? 'On' : 'Off'}`;
-      btnAgeColor.classList.toggle('active', state.ageColorEnabled);
-    }
+    if (btnAgeColor) btnAgeColor.checked = state.ageColorEnabled;
     updateAgeColorVisibility();
     if (notify) emitParamChange({ ageColorEnabled: state.ageColorEnabled });
   }
@@ -349,9 +357,28 @@ export function initControls({
     if (notify) emitParamChange({ fpsCap: nextCap });
   }
 
-  function setDisplayMode(label) {
-    state.displayMode = label.toLowerCase();
-    btnDisplay.textContent = `Mode: ${label}`;
+  function setDisplayMode(mode) {
+    state.displayMode = mode.toLowerCase();
+    displayButtons.forEach((button) => {
+      const isActive = button.dataset.mode === state.displayMode;
+      button.classList.toggle('active', isActive);
+      if (isActive) button.setAttribute('data-active', 'true');
+      else button.removeAttribute('data-active');
+    });
+  }
+
+  function setPlaybackRate(rate, notify = true) {
+    const nextRate = String(rate);
+    if (playbackRateSelect) playbackRateSelect.value = nextRate;
+    playbackRateButtons.forEach((button) => {
+      const isActive = button.dataset.rate === nextRate;
+      button.classList.toggle('active', isActive);
+      if (isActive) button.setAttribute('data-active', 'true');
+      else button.removeAttribute('data-active');
+    });
+    if (notify && playbackRateSelect) {
+      playbackRateSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   }
 
   function applyParams(params) {
@@ -434,24 +461,33 @@ export function initControls({
     applyTheme(getTheme() === 'light' ? 'dark' : 'light');
   });
 
-  btnAlgo.addEventListener('click', () => {
-    setAlgorithm(state.algorithm === 'posy' ? 'raw' : 'posy');
-    if (onAlgorithmToggle) onAlgorithmToggle();
+  btnAlgo?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-algorithm]');
+    if (!target) return;
+    setAlgorithm(target.dataset.algorithm);
   });
 
-  btnBlur.addEventListener('click', () => {
-    setBlurEnabled(!state.blurEnabled);
-    if (onBlurToggle) onBlurToggle();
+  btnBlur?.addEventListener('change', () => {
+    setBlurEnabled(btnBlur.checked);
   });
 
-  btnAgeColor?.addEventListener('click', () => {
+  btnAgeColor?.addEventListener('change', () => {
     if (state.algorithm !== 'posy') return;
-    setAgeColorEnabled(!state.ageColorEnabled);
+    setAgeColorEnabled(btnAgeColor.checked);
   });
 
-  btnDisplay.addEventListener('click', () => {
-    const label = onDisplayCycle();
-    setDisplayMode(label);
+  btnDisplay?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-mode]');
+    if (!target) return;
+    const mode = target.dataset.mode;
+    setDisplayMode(mode);
+    if (onDisplayModeChange) onDisplayModeChange(mode);
+  });
+
+  playbackRateControl?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-rate]');
+    if (!target) return;
+    setPlaybackRate(target.dataset.rate);
   });
 
   btnRecord?.addEventListener('click', () => {
@@ -532,6 +568,11 @@ export function initControls({
   setRgbTint('rgbTintB', state.rgbTintB, false);
   setAgeGradient('ageColorNew', state.ageColorNew, false);
   setAgeGradient('ageColorOld', state.ageColorOld, false);
+  setAlgorithm(state.algorithm, false);
+  setBlurEnabled(state.blurEnabled, false);
+  setAgeColorEnabled(state.ageColorEnabled, false);
+  setDisplayMode(state.displayMode);
+  setPlaybackRate(playbackRateSelect?.value || '1', false);
   rangeInputs.forEach((input) => {
     setRangeFill(input);
     input.addEventListener('input', () => {

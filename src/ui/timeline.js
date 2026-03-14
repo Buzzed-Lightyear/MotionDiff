@@ -25,6 +25,8 @@ export function initTimeline({ videoEl, onPlayPause, onStep, getFpsCap, getProce
   const scrubber = document.getElementById('timelineScrubber');
   const frameCounter = document.getElementById('frameCounter');
   const playbackRateSelect = document.getElementById('playbackRateSelect');
+  const playbackRateControl = document.getElementById('playbackRateControl');
+  const playbackRateButtons = Array.from(playbackRateControl?.querySelectorAll('[data-rate]') || []);
   const btnPlayPause = document.getElementById('btnPlayPause');
   const btnStepBack = document.getElementById('btnStepBack');
   const btnStepForward = document.getElementById('btnStepForward');
@@ -135,6 +137,9 @@ export function initTimeline({ videoEl, onPlayPause, onStep, getFpsCap, getProce
   function setEnabled(enabled) {
     scrubber.disabled = !enabled;
     playbackRateSelect.disabled = !enabled;
+    playbackRateButtons.forEach((button) => {
+      button.disabled = !enabled;
+    });
     btnPlayPause.disabled = !enabled;
     btnStepBack.disabled = !enabled;
     btnStepForward.disabled = !enabled;
