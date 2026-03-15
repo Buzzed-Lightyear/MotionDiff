@@ -105,6 +105,17 @@ export function initTimeline({ videoEl, onPlayPause, onStep, getFpsCap, getProce
 
   function detectFPS() {
     fps = DEFAULT_FPS;
+
+    if (videoEl.srcObject instanceof MediaStream) {
+      const track = videoEl.srcObject.getVideoTracks()[0];
+      const candidate = track?.getSettings?.().frameRate;
+      if (Number.isFinite(candidate) && candidate > 0) {
+        fps = candidate;
+      }
+      updateFrameCounter();
+      return;
+    }
+
     if (!videoEl.captureStream) {
       updateFrameCounter();
       return;

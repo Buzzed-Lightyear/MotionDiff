@@ -1,5 +1,6 @@
 import PipelineWorker from './pipeline.worker.js?worker';
 import { WebGLRenderer } from './renderer.webgl.js';
+import { buildSourceProfile } from './source-profile.js';
 
 const DEFAULT_PROCESS_WIDTH = 640;
 const FRAME_STORE_CAP = 120;
@@ -30,8 +31,8 @@ export class Pipeline {
     this._workerBusy = false;
     this._pendingFrame = null;
 
-    /** @type {boolean} Whether VideoFrame bridge is used for capture */
-    this._useVideoFrame = HAS_RVFC;
+    this._currentFrame = null;
+    this._sourceProfile = buildSourceProfile('file', HAS_RVFC);
 
     /** @type {boolean} Whether WebGL is active */
     this._useWebGL = false;
@@ -149,6 +150,10 @@ export class Pipeline {
     this.setHlsInstance(null);
   }
 
+  setSourceProfile(profile) {
+    this._sourceProfile = profile;
+  }
+
   logProcessingConfig() {
     const capLabel = this.params.fpsCap ? `${this.params.fpsCap}fps` : 'uncapped';
     console.log(`Pipeline: processing at ${this._processWidth}px, cap ${capLabel}`);
@@ -210,19 +215,26 @@ export class Pipeline {
    * Uses VideoFrame bridge when available.
    */
   captureFrame(video) {
-    if (!this.width || !this.height) return null;
+    const w = this.width;
+    const h = this.height;
+    if (!w || !h) return null;
+
+    const mode = this._sourceProfile?.frameCapture ?? 'draw-image';
     try {
-      if (this._useVideoFrame) {
-        const vf = new VideoFrame(video);
-        this._capCtx.drawImage(vf, 0, 0, this.width, this.height);
-        vf.close();
-        return this._capCtx.getImageData(0, 0, this.width, this.height);
-      } else {
-        this._capCtx.drawImage(video, 0, 0, this.width, this.height);
-        return this._capCtx.getImageData(0, 0, this.width, this.height);
+      if (mode === 'video-frame') {
+        this._currentFrame = new VideoFrame(video);
       }
+      if (mode === 'video-frame' && this._currentFrame) {
+        this._capCtx.drawImage(this._currentFrame, 0, 0, w, h);
+      } else {
+        this._capCtx.drawImage(video, 0, 0, w, h);
+      }
+      return this._capCtx.getImageData(0, 0, w, h);
     } catch {
       return null;
+    } finally {
+      this._currentFrame?.close();
+      this._currentFrame = null;
     }
   }
 
