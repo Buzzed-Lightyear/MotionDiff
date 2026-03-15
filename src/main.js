@@ -2,6 +2,7 @@ import { Pipeline } from './app/pipeline.js';
 import { attachHlsSource, isDashUrl, isHlsUrl, isYouTubeUrl } from './app/loader.js';
 import { CanvasRecorder } from './app/exporter.js';
 import { render, renderBlank } from './app/renderer.js';
+import { buildSourceProfile } from './app/source-profile.js';
 import { analyzeSample } from './core/analyze.js';
 import { initControls } from './ui/controls.js';
 import { initHelp } from './ui/help.js';
@@ -166,12 +167,14 @@ function handleFileLoad(file) {
   const url = URL.createObjectURL(file);
   activeObjectUrl = url;
   setStatus('Loading...', 'info');
+  pipeline.setSourceProfile(buildSourceProfile('file', HAS_RVFC));
   loadVideo(url, true);
 }
 
 function handleUrlLoad(url) {
   beginSourceLoad();
   setStatus('Loading...', 'info');
+  pipeline.setSourceProfile(buildSourceProfile('url', HAS_RVFC));
   loadVideo(url, false);
 }
 
@@ -181,8 +184,6 @@ async function handleWebcamLoad() {
   try {
     setStatus('Requesting camera...', 'info');
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    beginSourceLoad();
-    activeStream = stream;
     loadStream(stream, 'camera');
   } catch {
     setStatus('Camera access denied', 'error');
@@ -195,8 +196,6 @@ async function handleScreenLoad() {
   try {
     setStatus('Requesting screen...', 'info');
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-    beginSourceLoad();
-    activeStream = stream;
     loadStream(stream, 'screen');
   } catch {
     setStatus('Screen capture cancelled', 'error');
@@ -214,10 +213,17 @@ function beginSourceLoad() {
   timeline.setPaused();
   timeline.syncNow();
   controls.setPaused();
-  clearActiveSource();
+  const attachedStream = videoEl.srcObject instanceof MediaStream ? videoEl.srcObject : null;
+  if (attachedStream) {
+    attachedStream.getTracks().forEach((track) => track.stop());
+    if (activeStream === attachedStream) {
+      activeStream = null;
+    }
+  }
 
-  videoEl.removeAttribute('src');
+  clearActiveSource();
   videoEl.srcObject = null;
+  videoEl.removeAttribute('src');
   videoEl.load();
 }
 
@@ -251,6 +257,8 @@ function loadVideo(src, isLocal) {
     return;
   }
 
+  pipeline.setSourceProfile(buildSourceProfile(isLocal ? 'file' : 'url', HAS_RVFC));
+
   if (isLocal) {
     videoEl.removeAttribute('crossOrigin');
   } else {
@@ -262,7 +270,7 @@ function loadVideo(src, isLocal) {
   videoEl.loop = true;
   videoEl.playsInline = true;
 
-  const onCanPlay = () => {
+  const onLoadedMetadata = () => {
     cleanup();
     onVideoReady();
   };
@@ -275,16 +283,16 @@ function loadVideo(src, isLocal) {
       videoEl.crossOrigin = 'anonymous';
       videoEl.src = proxied;
 
-      const onCanPlayProxy = () => { cleanupProxy(); onVideoReady(); };
+      const onLoadedMetadataProxy = () => { cleanupProxy(); onVideoReady(); };
       const onErrorProxy = () => {
         cleanupProxy();
         handleLoadFailure('\u2717 Failed \u2014 check URL');
       };
       const cleanupProxy = () => {
-        videoEl.removeEventListener('canplay', onCanPlayProxy);
+        videoEl.removeEventListener('loadedmetadata', onLoadedMetadataProxy);
         videoEl.removeEventListener('error', onErrorProxy);
       };
-      videoEl.addEventListener('canplay', onCanPlayProxy);
+      videoEl.addEventListener('loadedmetadata', onLoadedMetadataProxy);
       videoEl.addEventListener('error', onErrorProxy);
       videoEl.load();
     } else {
@@ -293,22 +301,23 @@ function loadVideo(src, isLocal) {
   };
 
   const cleanup = () => {
-    videoEl.removeEventListener('canplay', onCanPlay);
+    videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
     videoEl.removeEventListener('error', onError);
   };
 
-  videoEl.addEventListener('canplay', onCanPlay);
+  videoEl.addEventListener('loadedmetadata', onLoadedMetadata);
   videoEl.addEventListener('error', onError);
   videoEl.load();
 }
 
 async function loadHlsVideo(src) {
+  pipeline.setSourceProfile(buildSourceProfile('hls', HAS_RVFC));
   videoEl.crossOrigin = 'anonymous';
   videoEl.muted = true;
   videoEl.loop = true;
   videoEl.playsInline = true;
 
-  const onCanPlay = () => {
+  const onLoadedMetadata = () => {
     cleanup();
     onVideoReady('\u2713 Loaded [HLS]');
   };
@@ -320,11 +329,11 @@ async function loadHlsVideo(src) {
   };
 
   const cleanup = () => {
-    videoEl.removeEventListener('canplay', onCanPlay);
+    videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
     videoEl.removeEventListener('error', onError);
   };
 
-  videoEl.addEventListener('canplay', onCanPlay);
+  videoEl.addEventListener('loadedmetadata', onLoadedMetadata);
   videoEl.addEventListener('error', onError);
 
   try {
@@ -337,31 +346,90 @@ async function loadHlsVideo(src) {
 }
 
 function loadStream(stream, sourceKind) {
+  beginSourceLoad();
+  pipeline.setSourceProfile(buildSourceProfile(sourceKind, HAS_RVFC));
+
+  activeStream = stream;
   videoEl.removeAttribute('crossOrigin');
-  videoEl.srcObject = stream;
+  videoEl.autoplay = true;
   videoEl.muted = true;
+  videoEl.defaultMuted = true;
   videoEl.loop = false;
   videoEl.playsInline = true;
+  videoEl.srcObject = stream;
 
-  const onCanPlay = () => {
+  if (import.meta.env.DEV) {
+    const track = stream.getVideoTracks()[0];
+    console.log('[MotionDiff] stream attach', {
+      kind: sourceKind,
+      label: track?.label,
+      readyState: track?.readyState,
+      settings: track?.getSettings?.(),
+    });
+    videoEl.addEventListener('loadedmetadata', () => {
+      console.log('[MotionDiff] loadedmetadata', {
+        videoWidth: videoEl.videoWidth,
+        videoHeight: videoEl.videoHeight,
+      });
+    }, { once: true });
+  }
+
+  let waitingForResize = false;
+  const onResize = () => {
+    if (videoEl.srcObject !== stream) {
+      cleanup();
+      return;
+    }
     cleanup();
     onVideoReady();
   };
 
-  const onError = () => {
+  const onLoadedMetadata = () => {
+    if (videoEl.srcObject !== stream) {
+      cleanup();
+      return;
+    }
+    videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+    if (videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+      waitingForResize = true;
+      videoEl.addEventListener('resize', onResize, { once: true });
+      return;
+    }
+
     cleanup();
-    const message = sourceKind === 'screen' ? 'Screen capture cancelled' : 'Camera access denied';
-    handleLoadFailure(message);
+    onVideoReady();
+  };
+
+  const onError = (event) => {
+    if (videoEl.srcObject !== stream) {
+      cleanup();
+      return;
+    }
+    cleanup();
+    const message = event?.message ?? event?.error?.message ?? 'unknown';
+    setStatus(`Stream error: ${message}`, 'error');
+    pipeline.clearState();
   };
 
   const cleanup = () => {
-    videoEl.removeEventListener('canplay', onCanPlay);
+    waitingForResize = false;
+    videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+    videoEl.removeEventListener('resize', onResize);
     videoEl.removeEventListener('error', onError);
   };
 
-  videoEl.addEventListener('canplay', onCanPlay);
+  videoEl.addEventListener('loadedmetadata', onLoadedMetadata);
   videoEl.addEventListener('error', onError);
-  videoEl.load();
+
+  if (sourceKind === 'screen') {
+    stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+      if (activeStream !== stream) return;
+      activeStream = null;
+      setStatus('Screen share ended', 'idle');
+      pipeline.stop();
+      pipeline.clearState();
+    });
+  }
 }
 
 function onVideoReady(loadedMessage = '\u2713 Loaded') {

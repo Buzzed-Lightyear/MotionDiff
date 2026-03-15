@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, test, expect } from 'vitest';
 import { posyBlend, rawDiff } from '../diff.js';
 import { accumulate } from '../trails.js';
 import { boxBlur } from '../blur.js';
 import { CircularBuffer } from '../buffer.js';
 import { analyzeSample } from '../analyze.js';
+import { buildSourceProfile, isStreamSource } from '../../app/source-profile.js';
 
 /**
  * Build a Uint8ClampedArray from RGBA quads.
@@ -375,5 +376,51 @@ describe('analyzeSample', () => {
 
     expect(result.threshold).toBe(40);
     expect(result.frameOffset).toBe(2);
+  });
+});
+
+describe('buildSourceProfile', () => {
+  test('screen → isStream true, frameCapture draw-image', () => {
+    const p = buildSourceProfile('screen', true);
+    expect(p.isStream).toBe(true);
+    expect(p.frameCapture).toBe('draw-image');
+  });
+
+  test('camera → isStream true, frameCapture draw-image', () => {
+    const p = buildSourceProfile('camera', true);
+    expect(p.isStream).toBe(true);
+    expect(p.frameCapture).toBe('draw-image');
+  });
+
+  test('file with rVFC → frameCapture video-frame', () => {
+    const p = buildSourceProfile('file', true);
+    expect(p.isStream).toBe(false);
+    expect(p.frameCapture).toBe('video-frame');
+  });
+
+  test('file without rVFC → frameCapture draw-image', () => {
+    const p = buildSourceProfile('file', false);
+    expect(p.frameCapture).toBe('draw-image');
+  });
+
+  test('hls with rVFC → frameCapture video-frame', () => {
+    expect(buildSourceProfile('hls', true).frameCapture).toBe('video-frame');
+  });
+
+  test('url without rVFC → frameCapture draw-image', () => {
+    expect(buildSourceProfile('url', false).frameCapture).toBe('draw-image');
+  });
+});
+
+describe('isStreamSource', () => {
+  test('screen and camera are stream sources', () => {
+    expect(isStreamSource('screen')).toBe(true);
+    expect(isStreamSource('camera')).toBe(true);
+  });
+
+  test('file, url, hls are not stream sources', () => {
+    expect(isStreamSource('file')).toBe(false);
+    expect(isStreamSource('url')).toBe(false);
+    expect(isStreamSource('hls')).toBe(false);
   });
 });
