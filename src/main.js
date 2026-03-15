@@ -34,7 +34,12 @@ let activeObjectUrl = null;
 let processedFrameCount = 0;
 let fpsWindowStart = 0;
 let skippedFrameCount = 0;
+let cameraFacingMode = 'environment';
+let theaterActive = false;
 const recorder = new CanvasRecorder(canvas);
+const outputCanvasShell = document.getElementById('outputCanvasShell');
+const theaterBackdrop = document.getElementById('theaterBackdrop');
+const theaterCloseBtn = document.getElementById('theaterCloseBtn');
 initHelp();
 initColorThemes();
 
@@ -50,8 +55,10 @@ const controls = initControls({
   onUrlLoad: handleUrlLoad,
   onDisplayModeChange: setDisplayMode,
   onAutoConfigure: handleAutoConfigure,
-  onWebcamLoad: handleWebcamLoad,
+  onCameraLoad: handleCameraLoad,
+  onCameraFlip: handleCameraFlip,
   onScreenLoad: handleScreenLoad,
+  onToggleTheater: toggleTheater,
   onProcessingWidthChange: handleProcessingWidthChange,
 });
 const timeline = initTimeline({
@@ -144,11 +151,39 @@ function clearDiffOutput() {
   renderBlank(outputCtx, width, height, controls.state.algorithm, controls.state.ageColorEnabled);
 }
 
+function setCameraFlipVisible(visible) {
+  controls.setCameraFlipVisible(visible);
+}
+
+function setTheaterActive(nextActive) {
+  if (!outputCanvasShell || !theaterBackdrop || !theaterCloseBtn) return;
+
+  theaterActive = Boolean(nextActive);
+  outputCanvasShell.classList.toggle('theater-active', theaterActive);
+  theaterBackdrop.hidden = !theaterActive;
+  theaterCloseBtn.hidden = !theaterActive;
+  controls.setTheaterActive(theaterActive);
+}
+
+function toggleTheater() {
+  if (!videoLoaded || !controls.state.playing) return;
+  setTheaterActive(!theaterActive);
+}
+
+function setTheaterAvailability(visible) {
+  if (!visible && theaterActive) {
+    setTheaterActive(false);
+  }
+  controls.setTheaterToggleVisible(visible);
+}
+
 function handleLoadFailure(message) {
   stopLoop();
   pipeline.stop();
   pipeline.clearState();
   clearActiveSource();
+  setCameraFlipVisible(false);
+  setTheaterAvailability(false);
   clearDiffOutput();
   videoLoaded = false;
   timeline.setEnabled(false);
@@ -163,6 +198,7 @@ function handleLoadFailure(message) {
 }
 
 function handleFileLoad(file) {
+  setCameraFlipVisible(false);
   beginSourceLoad();
   const url = URL.createObjectURL(file);
   activeObjectUrl = url;
@@ -172,21 +208,58 @@ function handleFileLoad(file) {
 }
 
 function handleUrlLoad(url) {
+  setCameraFlipVisible(false);
   beginSourceLoad();
   setStatus('Loading...', 'info');
   pipeline.setSourceProfile(buildSourceProfile('url', HAS_RVFC));
   loadVideo(url, false);
 }
 
-async function handleWebcamLoad() {
+async function handleCameraLoad() {
   if (!navigator.mediaDevices?.getUserMedia) return;
 
   try {
     setStatus('Requesting camera...', 'info');
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: cameraFacingMode },
+      audio: false,
+    });
+    setCameraFlipVisible(true);
     loadStream(stream, 'camera');
   } catch {
+    setCameraFlipVisible(false);
     setStatus('Camera access denied', 'error');
+  }
+}
+
+async function handleCameraFlip() {
+  if (!navigator.mediaDevices?.getUserMedia || !(videoEl.srcObject instanceof MediaStream)) return;
+
+  const previousFacingMode = cameraFacingMode;
+  cameraFacingMode = cameraFacingMode === 'environment' ? 'user' : 'environment';
+  videoEl.srcObject.getTracks().forEach((track) => track.stop());
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: cameraFacingMode },
+      audio: false,
+    });
+    setCameraFlipVisible(true);
+    loadStream(stream, 'camera');
+  } catch {
+    cameraFacingMode = previousFacingMode;
+    try {
+      const fallbackStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: previousFacingMode },
+        audio: false,
+      });
+      setCameraFlipVisible(true);
+      loadStream(fallbackStream, 'camera');
+    } catch {
+      beginSourceLoad();
+      setCameraFlipVisible(false);
+    }
+    setStatus('Camera flip not available on this device', 'error');
   }
 }
 
@@ -194,6 +267,7 @@ async function handleScreenLoad() {
   if (!navigator.mediaDevices?.getDisplayMedia) return;
 
   try {
+    setCameraFlipVisible(false);
     setStatus('Requesting screen...', 'info');
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
     loadStream(stream, 'screen');
@@ -207,6 +281,7 @@ function beginSourceLoad() {
     void stopRecording();
   }
 
+  setTheaterAvailability(false);
   stopLoop();
   videoLoaded = false;
   timeline.setEnabled(false);
@@ -348,6 +423,7 @@ async function loadHlsVideo(src) {
 function loadStream(stream, sourceKind) {
   beginSourceLoad();
   pipeline.setSourceProfile(buildSourceProfile(sourceKind, HAS_RVFC));
+  setCameraFlipVisible(sourceKind === 'camera');
 
   activeStream = stream;
   videoEl.removeAttribute('crossOrigin');
@@ -425,6 +501,7 @@ function loadStream(stream, sourceKind) {
     stream.getVideoTracks()[0]?.addEventListener('ended', () => {
       if (activeStream !== stream) return;
       activeStream = null;
+      setTheaterAvailability(false);
       setStatus('Screen share ended', 'idle');
       pipeline.stop();
       pipeline.clearState();
@@ -446,16 +523,19 @@ function onVideoReady(loadedMessage = '\u2713 Loaded') {
   setStatus(loadedMessage, 'success');
   timeline.setEnabled(true);
   timeline.syncNow();
+  setTheaterAvailability(false);
 
   videoEl.play().then(() => {
     controls.setPlaying();
     timeline.setPlaying();
+    setTheaterAvailability(true);
     startLoop();
   }).catch(() => {
     setStatus(`${loadedMessage} \u2014 press play`, 'success');
     controls.setPaused();
     timeline.setPaused();
     timeline.setEnabled(true);
+    setTheaterAvailability(false);
     if (controls.placeholderOriginal) controls.placeholderOriginal.style.display = 'none';
     if (controls.placeholderDiff)     controls.placeholderDiff.style.display = 'none';
     processCurrentFrame();
@@ -468,12 +548,14 @@ function handlePlayPause() {
     videoEl.play().then(() => {
       controls.setPlaying();
       timeline.setPlaying();
+      setTheaterAvailability(true);
       startLoop();
     });
   } else {
     videoEl.pause();
     controls.setPaused();
     timeline.setPaused();
+    setTheaterAvailability(false);
     stopLoop();
   }
 }
@@ -485,6 +567,7 @@ function handleStepFrame(deltaSeconds) {
     videoEl.pause();
     controls.setPaused();
     timeline.setPaused();
+    setTheaterAvailability(false);
     stopLoop();
   }
 
@@ -718,6 +801,7 @@ document.addEventListener('visibilitychange', () => {
       videoEl.dataset.autoPaused = 'true';
       controls.setPaused();
       timeline.setPaused();
+      setTheaterAvailability(false);
     }
   } else {
     if (videoEl.dataset.autoPaused === 'true') {
@@ -725,9 +809,24 @@ document.addEventListener('visibilitychange', () => {
       videoEl.play().then(() => {
         controls.setPlaying();
         timeline.setPlaying();
+        setTheaterAvailability(true);
         startLoop();
       });
     }
+  }
+});
+
+theaterCloseBtn?.addEventListener('click', () => {
+  setTheaterActive(false);
+});
+
+theaterBackdrop?.addEventListener('click', () => {
+  setTheaterActive(false);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && theaterActive) {
+    setTheaterActive(false);
   }
 });
 

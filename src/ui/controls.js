@@ -59,16 +59,20 @@ export function initControls({
   onUrlLoad,
   onDisplayModeChange,
   onAutoConfigure,
-  onWebcamLoad,
+  onCameraLoad,
+  onCameraFlip,
   onScreenLoad,
+  onToggleTheater,
   onProcessingWidthChange,
 }) {
   const fileInput = document.getElementById('fileInput');
   const urlInput = document.getElementById('urlInput');
   const loadUrlBtn = document.getElementById('loadUrlBtn');
   const autoConfigBtn = document.getElementById('autoConfigBtn');
-  const btnWebcam = document.getElementById('btnWebcam');
+  const btnCamera = document.getElementById('btnCamera');
+  const cameraFlipBtn = document.getElementById('cameraFlipBtn');
   const btnScreen = document.getElementById('btnScreen');
+  const theaterToggleBtn = document.getElementById('theaterToggleBtn');
   const themeToggle = document.getElementById('themeToggle');
   const statusEl = document.getElementById('statusMsg');
 
@@ -110,6 +114,13 @@ export function initControls({
   const displayButtons = Array.from(btnDisplay?.querySelectorAll('[data-mode]') || []);
   const playbackRateButtons = Array.from(playbackRateControl?.querySelectorAll('[data-rate]') || []);
   const ageToggleWrap = btnAgeColor?.closest('.toggle-switch');
+
+  function syncToggleTrack(input) {
+    const track = input?.nextElementSibling;
+    if (track?.classList?.contains('toggle-track')) {
+      track.classList.toggle('checked', Boolean(input.checked));
+    }
+  }
 
   const state = {
     frameOffset: 5,
@@ -271,6 +282,7 @@ export function initControls({
     algorithmButtons.forEach((button) => {
       const isActive = button.dataset.algorithm === algorithm;
       button.classList.toggle('active', isActive);
+      button.classList.toggle('seg-active', isActive);
       if (isActive) button.setAttribute('data-active', 'true');
       else button.removeAttribute('data-active');
     });
@@ -281,12 +293,14 @@ export function initControls({
   function setBlurEnabled(enabled, notify = true) {
     state.blurEnabled = Boolean(enabled);
     if (btnBlur) btnBlur.checked = state.blurEnabled;
+    syncToggleTrack(btnBlur);
     if (notify) emitParamChange({ blurEnabled: state.blurEnabled });
   }
 
   function setAgeColorEnabled(enabled, notify = true) {
     state.ageColorEnabled = Boolean(enabled);
     if (btnAgeColor) btnAgeColor.checked = state.ageColorEnabled;
+    syncToggleTrack(btnAgeColor);
     updateAgeColorVisibility();
     if (notify) emitParamChange({ ageColorEnabled: state.ageColorEnabled });
   }
@@ -362,6 +376,7 @@ export function initControls({
     displayButtons.forEach((button) => {
       const isActive = button.dataset.mode === state.displayMode;
       button.classList.toggle('active', isActive);
+      button.classList.toggle('seg-active', isActive);
       if (isActive) button.setAttribute('data-active', 'true');
       else button.removeAttribute('data-active');
     });
@@ -373,6 +388,7 @@ export function initControls({
     playbackRateButtons.forEach((button) => {
       const isActive = button.dataset.rate === nextRate;
       button.classList.toggle('active', isActive);
+      button.classList.toggle('seg-active', isActive);
       if (isActive) button.setAttribute('data-active', 'true');
       else button.removeAttribute('data-active');
     });
@@ -398,11 +414,18 @@ export function initControls({
     if (params.fpsCap !== undefined) setFpsCap(params.fpsCap, false);
   }
 
-  if (btnWebcam) {
-    btnWebcam.hidden = !navigator.mediaDevices?.getUserMedia;
-    btnWebcam.addEventListener('click', () => {
+  if (btnCamera) {
+    btnCamera.hidden = !navigator.mediaDevices?.getUserMedia;
+    btnCamera.addEventListener('click', () => {
       clearActivePresetButton();
-      if (onWebcamLoad) onWebcamLoad();
+      if (onCameraLoad) onCameraLoad();
+    });
+  }
+
+  if (cameraFlipBtn) {
+    cameraFlipBtn.hidden = true;
+    cameraFlipBtn.addEventListener('click', () => {
+      if (onCameraFlip) onCameraFlip();
     });
   }
 
@@ -411,6 +434,13 @@ export function initControls({
     btnScreen.addEventListener('click', () => {
       clearActivePresetButton();
       if (onScreenLoad) onScreenLoad();
+    });
+  }
+
+  if (theaterToggleBtn) {
+    theaterToggleBtn.hidden = true;
+    theaterToggleBtn.addEventListener('click', () => {
+      if (onToggleTheater) onToggleTheater();
     });
   }
 
@@ -617,6 +647,19 @@ export function initControls({
       if (!btnRecord) return;
       btnRecord.textContent = isRecording ? 'Stop' : 'Record';
       btnRecord.classList.toggle('recording', isRecording);
+    },
+    setCameraFlipVisible(visible) {
+      if (!cameraFlipBtn) return;
+      cameraFlipBtn.hidden = !visible;
+    },
+    setTheaterToggleVisible(visible) {
+      if (!theaterToggleBtn) return;
+      theaterToggleBtn.hidden = !visible;
+    },
+    setTheaterActive(isActive) {
+      if (!theaterToggleBtn) return;
+      theaterToggleBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      theaterToggleBtn.title = isActive ? 'Collapse motion diff' : 'Expand motion diff';
     },
     setPlaying,
     setPaused,
