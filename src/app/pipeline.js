@@ -34,6 +34,14 @@ export class Pipeline {
     this._currentFrame = null;
     this._sourceProfile = buildSourceProfile('file', HAS_RVFC);
 
+    // ── Sonification energy grid (see core/energy.js) ──
+    // Size 0 means "nobody is listening" — neither path computes a grid.
+    this._energyCols = 0;
+    this._energyRows = 0;
+    this._energyGrid = null;
+    this._energyGridCols = 0;
+    this._energyGridRows = 0;
+
     /** @type {boolean} Whether WebGL is active */
     this._useWebGL = false;
 
@@ -108,6 +116,12 @@ export class Pipeline {
         currentFrame = new ImageData(curArr, this.width, this.height);
       }
 
+      if (msg.energyBuffer) {
+        this._energyGrid = new Float32Array(msg.energyBuffer);
+        this._energyGridCols = msg.energyCols;
+        this._energyGridRows = msg.energyRows;
+      }
+
       if (this.onResult) {
         this.onResult({ currentFrame, accumulated });
       }
@@ -127,6 +141,7 @@ export class Pipeline {
     this._frameStore = new Array(FRAME_STORE_CAP);
     this._storeHead = -1;
     this._storeSize = 0;
+    this._energyGrid = null;
 
     if (this._useWebGL && this._glRenderer) {
       this._glRenderer.clearTrails();
@@ -176,6 +191,38 @@ export class Pipeline {
       this.params.fpsCap = params.fpsCap;
       this.logProcessingConfig();
     }
+  }
+
+  /**
+   * Latest motion-energy grid for whichever render path is active, or null
+   * before the first processed frame. Asking for a size is also what turns the
+   * grid on: the worker path computes at the requested size from the next frame
+   * onward, and cols/rows below 1 switch the readback off entirely.
+   *
+   * @param {number} cols
+   * @param {number} rows
+   * @returns {Float32Array|null} cols*rows energies in 0..1, row-major
+   */
+  getEnergyGrid(cols, rows) {
+    const nextCols = Number.isFinite(cols) ? Math.floor(cols) : 0;
+    const nextRows = Number.isFinite(rows) ? Math.floor(rows) : 0;
+
+    if (nextCols !== this._energyCols || nextRows !== this._energyRows) {
+      this._energyCols = nextCols;
+      this._energyRows = nextRows;
+      this._energyGrid = null;
+    }
+
+    if (nextCols < 1 || nextRows < 1) return null;
+
+    if (this._useWebGL) {
+      // GPU readback arrives with renderer.readEnergyGrid; fallback path is live.
+      return null;
+    }
+
+    // Worker results lag the request by a frame; ignore stale grid sizes.
+    if (this._energyGridCols !== nextCols || this._energyGridRows !== nextRows) return null;
+    return this._energyGrid;
   }
 
   setProcessingWidth(width) {
@@ -429,6 +476,8 @@ export class Pipeline {
       params: { ...this.params },
       width: this.width,
       height: this.height,
+      energyCols: this._energyCols,
+      energyRows: this._energyRows,
     }, [currentFrameBuffer]);
   }
 }
