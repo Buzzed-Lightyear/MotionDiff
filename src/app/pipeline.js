@@ -1,6 +1,8 @@
 import PipelineWorker from './pipeline.worker.js?worker';
 import { WebGLRenderer } from './renderer.webgl.js';
 import { buildSourceProfile } from './source-profile.js';
+import { posyBlend } from '../core/diff.js';
+import { cellEnergies } from '../core/energy.js';
 
 const DEFAULT_PROCESS_WIDTH = 640;
 const FRAME_STORE_CAP = 120;
@@ -216,8 +218,8 @@ export class Pipeline {
     if (nextCols < 1 || nextRows < 1) return null;
 
     if (this._useWebGL) {
-      // GPU readback arrives with renderer.readEnergyGrid; fallback path is live.
-      return null;
+      if (!this._glRenderer || this._storeSize < 2) return null;
+      return this._glRenderer.readEnergyGrid(nextCols, nextRows);
     }
 
     // Worker results lag the request by a frame; ignore stale grid sizes.
@@ -480,4 +482,70 @@ export class Pipeline {
       energyRows: this._energyRows,
     }, [currentFrameBuffer]);
   }
+}
+
+/**
+ * Dev-only parity probe for SPEC-sonification A6.
+ *
+ * Feeds the same two synthetic frames through the CPU core math and the WebGL
+ * readback and returns both grids so their cells can be compared. Only ever
+ * called behind `import.meta.env.DEV`, so production builds tree-shake it away.
+ *
+ * It resizes the renderer to the synthetic frame size and clears the pipeline
+ * afterwards — run it on an idle page, not mid-playback.
+ *
+ * @param {Pipeline} pipeline - A pipeline whose init() picked the WebGL path
+ * @param {number} [cols]
+ * @param {number} [rows]
+ * @returns {{cols: number, rows: number, core: number[], webgl: number[]}|null}
+ */
+export function debugEnergyParity(pipeline, cols = 8, rows = 4) {
+  const gl = pipeline?._glRenderer;
+  if (!gl) return null;
+
+  const width = 128;
+  const height = 64;
+  const prev = new Uint8ClampedArray(width * height * 4);
+  const next = new Uint8ClampedArray(width * height * 4);
+  const base = 96;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      prev[i] = prev[i + 1] = prev[i + 2] = base;
+      prev[i + 3] = 255;
+      // Only the second frame carries the wedge: motion grows to the right and
+      // is strongest at the top, so every cell lands on a different energy.
+      const wedge = Math.round((x / (width - 1)) * 120 * (1 - y / (height - 1)));
+      next[i] = next[i + 1] = next[i + 2] = base + wedge;
+      next[i + 3] = 255;
+    }
+  }
+
+  const diff = new Uint8ClampedArray(width * height * 4);
+  posyBlend(next, prev, diff, 0);
+  const core = cellEnergies(diff, width, height, cols, rows, true);
+
+  const restoreWidth = gl.width;
+  const restoreHeight = gl.height;
+  gl.setSize(width, height);
+  const prevImage = new ImageData(prev, width, height);
+  const nextImage = new ImageData(next, width, height);
+  gl.uploadImageData(nextImage, 'current');
+  gl.uploadImageData(prevImage, 'oldR');
+  gl.uploadImageData(prevImage, 'oldG');
+  gl.uploadImageData(prevImage, 'oldB');
+  gl.renderDiff({
+    threshold: 0,
+    algorithm: 'posy',
+    rgbTintR: '#ff0000',
+    rgbTintG: '#00ff00',
+    rgbTintB: '#0000ff',
+  });
+  const webgl = Array.from(gl.readEnergyGrid(cols, rows));
+
+  if (restoreWidth > 0 && restoreHeight > 0) gl.setSize(restoreWidth, restoreHeight);
+  pipeline.clearState();
+
+  return { cols, rows, core: Array.from(core), webgl };
 }
