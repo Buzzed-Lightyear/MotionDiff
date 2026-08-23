@@ -13,8 +13,11 @@ Vite + vanilla ES modules. No framework. Deployed to GitHub Pages.
 core/  <- imports nothing (pure functions + CircularBuffer; all unit-testable in node)
 app/   <- imports core/ only (Pipeline orchestration, WebGL renderer, Canvas2D worker fallback)
 ui/    <- imports app/ only (DOM bindings)
-main.js <- app/ + ui/ (wiring + render loop)
+main.js <- app/ + ui/, and core/ directly for pure helpers (wiring + render loop)
 ```
+These rules govern imports between `src/` layers only. Third-party npm packages may be
+imported at any layer (`ui/controls.js` imports `@simonwep/pickr`). Test files are also
+exempt — `core/__tests__/core.test.js` imports `app/source-profile.js`.
 
 ## Key conventions
 - Posy space: 128 (0.5 in shaders) = "no motion" baseline. Motion = deviation from 128.
@@ -42,4 +45,4 @@ main.js <- app/ + ui/ (wiring + render loop)
   branches are developed in parallel off this branch — small `index.html` diffs merge
   cleanly, large ones conflict.
 - Specs for in-flight features live in `specs/`. Read the relevant spec fully before
-  writing any code, and treat its Scope section as a hard boundary.
+  writing any code, and treat its Non-goals and Files sections as hard boundaries.

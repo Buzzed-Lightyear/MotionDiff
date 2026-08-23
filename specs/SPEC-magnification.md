@@ -1,6 +1,7 @@
 # SPEC: Eulerian magnification — amplify subtle change and add it back
 
-Status: ready for implementation. Read CLAUDE.md first. Scope boundaries are hard.
+Status: ready for implementation. Read CLAUDE.md first. The Non-goals and Files
+sections below are hard boundaries.
 Reference: Wu et al., "Eulerian Video Magnification" (MIT CSAIL, SIGGRAPH 2012) —
 this spec implements the simplest IIR variant, not the full Laplacian pyramid.
 
@@ -82,6 +83,11 @@ Modify (keep diffs minimal — parallel branch warning in CLAUDE.md):
   program for EMA update (one program, run twice with different alpha uniform) and
   one for the composite add-back. Mirror `core/magnify.js` math exactly, including
   the luma/chroma split and clamping.
+- Algorithm-uniform trap: the existing shaders select the mode with
+  `algorithm === 'posy' ? 0 : 1` (the `uAlgorithm` uniform, set in `renderDiff` and
+  `renderComposite`). A third mode therefore falls through as Raw and renders
+  silently wrong. Route magnify around those programs with its own path rather
+  than adding a third branch to the existing shaders.
 - State reset: on source change, seek, resize, or switching into magnify mode,
   seed both states with the current frame (NOT zero — zero-seeding produces a
   bright flash decaying over seconds). Wire into the same paths that call
@@ -115,8 +121,12 @@ Modify (keep diffs minimal — parallel branch warning in CLAUDE.md):
 - A2 Band-pass response (scalar simulation, dt = 1000/30 ms, 900 steps): feed
   `x(t) = 0.5 + 0.1·sin(2π·f·t)` through both EMAs; measure steady-state band
   amplitude over the last 300 steps. With defaults (0.7 Hz, 2.0 Hz): at
-  f = 1.2 Hz band amplitude ≥ 0.35 × input amplitude; at f = 8 Hz it is
-  ≤ 0.15 × input; for constant input the band settles to |band| < 1e−4.
+  f = 1.2 Hz band amplitude ≥ 0.35 × input amplitude (expect ≈ 0.48); at
+  f = 8 Hz it is ≤ 0.20 × input (expect ≈ 0.175); for constant input the band
+  settles to |band| < 1e−4. The 8 Hz bound is deliberately loose: the difference
+  of two one-pole EMAs rolls off at only 6 dB/octave, so this design cannot reach
+  0.15 at 8 Hz. Do not tighten it by changing the defaults or adding filter
+  poles — both are out of scope; the loose stopband is accepted.
 - A3 `magnifyPixel`: static input (cur = fast = slow) returns cur exactly;
   output is clamped to [0, 1] for adversarial inputs; `chroma = 0` on a pure
   color oscillation with constant luma returns (near) unamplified output.

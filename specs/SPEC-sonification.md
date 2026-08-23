@@ -1,6 +1,7 @@
 # SPEC: Sonification — turn the diff frame into sound
 
-Status: ready for implementation. Read CLAUDE.md first. Scope boundaries are hard.
+Status: ready for implementation. Read CLAUDE.md first. The Non-goals and Files
+sections below are hard boundaries.
 
 ## Context
 MotionDiff computes a per-pixel motion measurement: in Posy mode, |value − 128| per
