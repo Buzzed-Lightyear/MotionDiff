@@ -1,6 +1,7 @@
 import PipelineWorker from './pipeline.worker.js?worker';
 import { WebGLRenderer } from './renderer.webgl.js';
 import { buildSourceProfile } from './source-profile.js';
+import { emaAlpha } from '../core/magnify.js';
 
 const DEFAULT_PROCESS_WIDTH = 640;
 const FRAME_STORE_CAP = 120;
@@ -478,8 +479,33 @@ export class Pipeline {
   // ── Magnify: WebGL path ─────────────────────────────────────
 
   _processMagnifyWebGL(video) {
-    // Replaced by the float-texture EMA implementation (Task 3).
-    this._glRenderer.renderBlank(this.params.algorithm, false);
+    const frame = this.captureFrame(video);
+    if (!frame) return;
+
+    // Keep the lookback store warm so switching back to Posy/Raw behaves.
+    this._storePush(frame);
+
+    const gl = this._glRenderer;
+    if (!gl.magnifySupported) {
+      // The UI disables the magnify option when unsupported; if we still
+      // get here, show a blank frame rather than rendering garbage.
+      gl.renderBlank(this.params.algorithm, false);
+      return;
+    }
+
+    const dtMs = this._magFrameDt(performance.now());
+    gl.uploadImageData(frame, 'current');
+    const ok = gl.renderMagnify({
+      alphaFast: emaAlpha(this.params.magFreqHigh, dtMs),
+      alphaSlow: emaAlpha(this.params.magFreqLow, dtMs),
+      amp: this.params.magAmp,
+      chroma: this.params.magChroma,
+      downsample: this.params.magDownsample,
+      blurEnabled: this.params.blurEnabled,
+    });
+    if (!ok) {
+      gl.renderBlank(this.params.algorithm, false);
+    }
   }
 
   // ── Magnify: Worker path (fallback) ─────────────────────────

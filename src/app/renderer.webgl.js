@@ -10,6 +10,8 @@
  * The renderer also handles a 3×3 box blur pass when enabled.
  */
 
+import { magnifyFrame, seedStates } from '../core/magnify.js';
+
 // ── Shader sources ──────────────────────────────────────────────
 
 const VERT_SRC = `#version 300 es
@@ -144,6 +146,66 @@ void main() {
   }
 
   fragColor = vec4(best, 1.0);
+}`;
+
+// Plain copy — used to downsample the current frame into the magnify
+// working size (linear sampling does the pooling) and to seed the EMA
+// state textures.
+const COPY_FRAG = `#version 300 es
+precision mediump float;
+
+uniform sampler2D uInput;
+
+in vec2 vUV;
+out vec4 fragColor;
+
+void main() {
+  fragColor = vec4(texture(uInput, vUV).rgb, 1.0);
+}`;
+
+// One EMA step into a float render target. Run twice per frame with
+// different alpha uniforms (fast follower from the HIGH cutoff, slow
+// follower from the LOW cutoff). Mirrors core/magnify.js emaUpdate.
+const EMA_FRAG = `#version 300 es
+precision highp float;
+
+uniform sampler2D uState;   // previous EMA state (float texture)
+uniform sampler2D uFrame;   // blurred/downsampled current frame
+uniform float uAlpha;
+
+in vec2 vUV;
+out vec4 fragColor;
+
+void main() {
+  vec3 prev = texture(uState, vUV).rgb;
+  vec3 frame = texture(uFrame, vUV).rgb;
+  fragColor = vec4(prev + uAlpha * (frame - prev), 1.0);
+}`;
+
+// Magnify add-back: current full-res frame + amp * band, with the
+// Rec.709 luma/chroma split. The float states sit at the downsampled
+// size; linear texture sampling performs the upsample for free.
+// Mirrors core/magnify.js magnifyPixel exactly, including clamping.
+const MAG_COMPOSITE_FRAG = `#version 300 es
+precision highp float;
+
+uniform sampler2D uCurrent;
+uniform sampler2D uFast;
+uniform sampler2D uSlow;
+uniform float uAmp;
+uniform float uChroma;
+
+in vec2 vUV;
+out vec4 fragColor;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+void main() {
+  vec3 cur = texture(uCurrent, vUV).rgb;
+  vec3 band = texture(uFast, vUV).rgb - texture(uSlow, vUV).rgb;
+  float bandLuma = dot(band, LUMA);
+  vec3 result = cur + uAmp * bandLuma + uAmp * uChroma * (band - vec3(bandLuma));
+  fragColor = vec4(clamp(result, 0.0, 1.0), 1.0);
 }`;
 
 const COMPOSITE_FRAG = `#version 300 es
@@ -299,6 +361,28 @@ export class WebGLRenderer {
     this._accumTex2 = null;
     this._accumFB2 = null;
 
+    // ── Magnify resources (allocated lazily at the downsampled size) ──
+    this._copyProg = null;
+    this._emaProg = null;
+    this._magCompositeProg = null;
+    this._magW = 0;
+    this._magH = 0;
+    this._magFrameTex = null;
+    this._magFrameFB = null;
+    this._magBlurTex = null;
+    this._magBlurFB = null;
+    // Two ping-pong float texture pairs: fast and slow EMA states
+    this._magFastTex = [null, null];
+    this._magFastFB = [null, null];
+    this._magSlowTex = [null, null];
+    this._magSlowFB = [null, null];
+    this._magStateRead = 0;
+    this._magNeedsSeed = true;
+
+    /** @type {boolean} Whether magnify mode can run on this context */
+    this.magnifySupported = false;
+    this._magUseFullFloat = false;
+
     this._init();
   }
 
@@ -320,12 +404,36 @@ export class WebGLRenderer {
     const compFs = compileShader(gl, gl.FRAGMENT_SHADER, COMPOSITE_FRAG);
     this._compositeProg = linkProgram(gl, vs, compFs);
 
+    const copyFs = compileShader(gl, gl.FRAGMENT_SHADER, COPY_FRAG);
+    this._copyProg = linkProgram(gl, vs, copyFs);
+
+    const emaFs = compileShader(gl, gl.FRAGMENT_SHADER, EMA_FRAG);
+    this._emaProg = linkProgram(gl, vs, emaFs);
+
+    const magCompFs = compileShader(gl, gl.FRAGMENT_SHADER, MAG_COMPOSITE_FRAG);
+    this._magCompositeProg = linkProgram(gl, vs, magCompFs);
+
     // We can delete the individual shader objects now — they're linked
     gl.deleteShader(vs);
     gl.deleteShader(diffFs);
     gl.deleteShader(blurFs);
     gl.deleteShader(accumFs);
     gl.deleteShader(compFs);
+    gl.deleteShader(copyFs);
+    gl.deleteShader(emaFs);
+    gl.deleteShader(magCompFs);
+
+    // ── Magnify float-texture support ──
+    // EMA states need render-to-float. Prefer RGBA32F (only when its
+    // linear filtering extension is present — the upsample relies on it);
+    // otherwise RGBA16F, which WebGL2 filters natively and which either
+    // color-buffer extension makes renderable. With neither extension,
+    // magnify mode is unavailable on the WebGL path.
+    const extFloat = gl.getExtension('EXT_color_buffer_float');
+    const extHalf = extFloat ? null : gl.getExtension('EXT_color_buffer_half_float');
+    const extFloatLinear = gl.getExtension('OES_texture_float_linear');
+    this.magnifySupported = Boolean(extFloat || extHalf);
+    this._magUseFullFloat = Boolean(extFloat && extFloatLinear);
 
     // ── Fullscreen quad geometry ──
     this._quadVAO = gl.createVertexArray();
@@ -403,6 +511,7 @@ export class WebGLRenderer {
     }
     this._trailHead = -1;
     this._trailSize = 0;
+    this._magNeedsSeed = true;
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -418,6 +527,66 @@ export class WebGLRenderer {
     const gl = this.gl;
     if (tex) gl.deleteTexture(tex);
     if (fb) gl.deleteFramebuffer(fb);
+  }
+
+  _createFloatTexture(w, h) {
+    const gl = this.gl;
+    const tex = createTexture(gl);
+    const internal = this._magUseFullFloat ? gl.RGBA32F : gl.RGBA16F;
+    const type = this._magUseFullFloat ? gl.FLOAT : gl.HALF_FLOAT;
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, gl.RGBA, type, null);
+    return tex;
+  }
+
+  /**
+   * (Re)create the magnify working textures at the downsampled size.
+   * Returns false (and marks magnify unsupported) if the float
+   * framebuffer turns out to be incomplete on this driver.
+   */
+  _ensureMagResources(w, h) {
+    if (this._magW === w && this._magH === h && this._magFrameTex) return true;
+    const gl = this.gl;
+    this._magW = w;
+    this._magH = h;
+
+    this._cleanupTexFB(this._magFrameTex, this._magFrameFB);
+    this._magFrameTex = this._createSizedTexture(w, h);
+    this._magFrameFB = createFramebuffer(gl, this._magFrameTex);
+
+    this._cleanupTexFB(this._magBlurTex, this._magBlurFB);
+    this._magBlurTex = this._createSizedTexture(w, h);
+    this._magBlurFB = createFramebuffer(gl, this._magBlurTex);
+
+    for (let i = 0; i < 2; i++) {
+      this._cleanupTexFB(this._magFastTex[i], this._magFastFB[i]);
+      this._magFastTex[i] = this._createFloatTexture(w, h);
+      this._magFastFB[i] = createFramebuffer(gl, this._magFastTex[i]);
+
+      this._cleanupTexFB(this._magSlowTex[i], this._magSlowFB[i]);
+      this._magSlowTex[i] = this._createFloatTexture(w, h);
+      this._magSlowFB[i] = createFramebuffer(gl, this._magSlowTex[i]);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._magFastFB[0]);
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!complete) {
+      console.warn('Magnify: float framebuffer incomplete, disabling magnify on WebGL');
+      this.magnifySupported = false;
+      return false;
+    }
+
+    this._magStateRead = 0;
+    this._magNeedsSeed = true;
+    return true;
+  }
+
+  _drawQuadTo(fb, w, h) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.viewport(0, 0, w, h);
+    gl.bindVertexArray(this._quadVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
   /**
@@ -667,6 +836,112 @@ export class WebGLRenderer {
   }
 
   /**
+   * Run the full magnify pass for the frame already uploaded to the
+   * 'current' slot: downsample (+ optional blur), update both EMA state
+   * textures, then composite current + amp·band to the canvas.
+   *
+   * Magnify deliberately bypasses the diff/trail/composite programs —
+   * their uAlgorithm uniform only distinguishes Posy from Raw, so a third
+   * mode routed through them would silently render as Raw.
+   *
+   * @param {object} opts - { alphaFast, alphaSlow, amp, chroma, downsample, blurEnabled }
+   * @returns {boolean} false when magnify is unavailable on this context
+   */
+  renderMagnify(opts) {
+    const gl = this.gl;
+    if (!this.magnifySupported) return false;
+
+    const ds = opts.downsample || 1;
+    const w = Math.max(1, Math.round(this.width / ds));
+    const h = Math.max(1, Math.round(this.height / ds));
+    if (!this._ensureMagResources(w, h)) return false;
+
+    // 1. Downsample the current frame (linear sampling = spatial pooling)
+    gl.useProgram(this._copyProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._texCurrent);
+    gl.uniform1i(gl.getUniformLocation(this._copyProg, 'uInput'), 0);
+    this._drawQuadTo(this._magFrameFB, w, h);
+    let frameTex = this._magFrameTex;
+
+    // 2. Optional pre-EMA box blur at the downsampled size
+    if (opts.blurEnabled) {
+      gl.useProgram(this._blurProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this._magFrameTex);
+      gl.uniform1i(gl.getUniformLocation(this._blurProg, 'uInput'), 0);
+      gl.uniform2f(gl.getUniformLocation(this._blurProg, 'uTexelSize'), 1.0 / w, 1.0 / h);
+      this._drawQuadTo(this._magBlurFB, w, h);
+      frameTex = this._magBlurTex;
+    }
+
+    // 3. Seed both states with the current frame (never zero — that
+    //    would flash bright and decay over seconds)
+    if (this._magNeedsSeed) {
+      gl.useProgram(this._copyProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, frameTex);
+      gl.uniform1i(gl.getUniformLocation(this._copyProg, 'uInput'), 0);
+      this._drawQuadTo(this._magFastFB[this._magStateRead], w, h);
+      this._drawQuadTo(this._magSlowFB[this._magStateRead], w, h);
+      this._magNeedsSeed = false;
+    }
+
+    // 4. EMA updates — one program, run twice with different alpha
+    gl.useProgram(this._emaProg);
+    const uState = gl.getUniformLocation(this._emaProg, 'uState');
+    const uFrame = gl.getUniformLocation(this._emaProg, 'uFrame');
+    const uAlpha = gl.getUniformLocation(this._emaProg, 'uAlpha');
+    const read = this._magStateRead;
+    const write = 1 - read;
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, frameTex);
+    gl.uniform1i(uFrame, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(uState, 0);
+
+    gl.bindTexture(gl.TEXTURE_2D, this._magFastTex[read]);
+    gl.uniform1f(uAlpha, opts.alphaFast);
+    this._drawQuadTo(this._magFastFB[write], w, h);
+
+    gl.bindTexture(gl.TEXTURE_2D, this._magSlowTex[read]);
+    gl.uniform1f(uAlpha, opts.alphaSlow);
+    this._drawQuadTo(this._magSlowFB[write], w, h);
+
+    this._magStateRead = write;
+
+    // 5. Composite to canvas: full-res current + upsampled amp·band
+    const prog = this._magCompositeProg;
+    gl.useProgram(prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._texCurrent);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uCurrent'), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this._magFastTex[write]);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uFast'), 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this._magSlowTex[write]);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uSlow'), 2);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uAmp'), opts.amp);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uChroma'), opts.chroma);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.bindVertexArray(this._quadVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    return true;
+  }
+
+  /**
+   * Re-seed the EMA states from the next frame (source change, seek,
+   * resize, or switching into magnify mode).
+   */
+  resetMagnifyState() {
+    this._magNeedsSeed = true;
+  }
+
+  /**
    * Render a fallback solid color when no diff data is available.
    * @param {string} algorithm - 'posy' | 'raw'
    */
@@ -683,11 +958,13 @@ export class WebGLRenderer {
   }
 
   /**
-   * Clear the trail buffer (e.g. on video change).
+   * Clear the trail buffer (e.g. on video change). The magnify EMA
+   * states re-seed on the same occasions.
    */
   clearTrails() {
     this._trailHead = -1;
     this._trailSize = 0;
+    this._magNeedsSeed = true;
   }
 
   /**
@@ -698,18 +975,23 @@ export class WebGLRenderer {
     if (!gl) return;
 
     // Delete programs
-    [this._diffProg, this._blurProg, this._accumProg, this._compositeProg].forEach(p => {
+    [this._diffProg, this._blurProg, this._accumProg, this._compositeProg,
+     this._copyProg, this._emaProg, this._magCompositeProg].forEach(p => {
       if (p) gl.deleteProgram(p);
     });
 
     // Delete textures
     [this._texCurrent, this._texOldR, this._texOldG, this._texOldB,
-     this._diffTex, this._blurTex, this._accumTex, this._accumTex2].forEach(t => {
+     this._diffTex, this._blurTex, this._accumTex, this._accumTex2,
+     this._magFrameTex, this._magBlurTex,
+     ...this._magFastTex, ...this._magSlowTex].forEach(t => {
       if (t) gl.deleteTexture(t);
     });
 
     // Delete framebuffers
-    [this._diffFB, this._blurFB, this._accumFB, this._accumFB2].forEach(fb => {
+    [this._diffFB, this._blurFB, this._accumFB, this._accumFB2,
+     this._magFrameFB, this._magBlurFB,
+     ...this._magFastFB, ...this._magSlowFB].forEach(fb => {
       if (fb) gl.deleteFramebuffer(fb);
     });
 
@@ -722,4 +1004,89 @@ export class WebGLRenderer {
     // VAO
     if (this._quadVAO) gl.deleteVertexArray(this._quadVAO);
   }
+}
+
+// ── Dev-only shader/core parity harness ─────────────────────────
+// core/magnify.js is the source of truth; the magnify shaders must match
+// it. Feeds the same 3-frame synthetic sequence through magnifyFrame and
+// through the WebGL magnify path (readPixels) and reports the max
+// per-channel difference (acceptance: < 3/255).
+
+export function runMagnifyParityHarness() {
+  const W = 16;
+  const H = 12;
+  const AMP = 15;
+  const CHROMA = 1.0;
+  const ALPHA_FAST = 0.342; // ≈ emaAlpha(2.0 Hz, 1000/30 ms)
+  const ALPHA_SLOW = 0.136; // ≈ emaAlpha(0.7 Hz, 1000/30 ms)
+
+  // Synthetic sequence: spatial ramps with a temporal wobble.
+  const frames = [];
+  for (let k = 0; k < 3; k++) {
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const wobble = Math.round(6 * Math.sin((k / 3) * 2 * Math.PI + x * 0.5));
+        data[i]     = Math.min(255, Math.max(0, 40 + x * 12 + wobble));
+        data[i + 1] = Math.min(255, Math.max(0, 60 + y * 14 - wobble));
+        data[i + 2] = Math.min(255, Math.max(0, 128 + wobble * 2));
+        data[i + 3] = 255;
+      }
+    }
+    frames.push(new ImageData(data, W, H));
+  }
+
+  // CPU reference — the exact loop the worker fallback runs.
+  const fast = new Float32Array(W * H * 4);
+  const slow = new Float32Array(W * H * 4);
+  seedStates(frames[0].data, fast, slow);
+  const cpuOut = frames.map(() => new Uint8ClampedArray(W * H * 4));
+  for (let k = 0; k < 3; k++) {
+    magnifyFrame(frames[k].data, fast, slow, cpuOut[k], ALPHA_FAST, ALPHA_SLOW, AMP, CHROMA);
+  }
+
+  // GPU path on an isolated renderer instance.
+  const canvas = document.createElement('canvas');
+  const renderer = new WebGLRenderer(canvas);
+  if (!renderer.magnifySupported) {
+    renderer.dispose();
+    return { supported: false, maxDiff: null, pass: false };
+  }
+  renderer.setSize(W, H);
+  renderer.resetMagnifyState();
+  const useFullFloat = renderer._magUseFullFloat;
+
+  const gl = renderer.gl;
+  const px = new Uint8Array(W * H * 4);
+  let maxDiff = 0;
+  for (let k = 0; k < 3; k++) {
+    renderer.uploadImageData(frames[k], 'current');
+    renderer.renderMagnify({
+      alphaFast: ALPHA_FAST,
+      alphaSlow: ALPHA_SLOW,
+      amp: AMP,
+      chroma: CHROMA,
+      downsample: 1,
+      blurEnabled: false,
+    });
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+    // readPixels rows come back bottom-up relative to the image.
+    for (let y = 0; y < H; y++) {
+      const gpuRow = (H - 1 - y) * W * 4;
+      const cpuRow = y * W * 4;
+      for (let b = 0; b < W * 4; b++) {
+        if ((b & 3) === 3) continue; // alpha
+        const d = Math.abs(px[gpuRow + b] - cpuOut[k][cpuRow + b]);
+        if (d > maxDiff) maxDiff = d;
+      }
+    }
+  }
+  renderer.dispose();
+  return { supported: true, useFullFloat, maxDiff, pass: maxDiff < 3 };
+}
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__magnifyParityHarness = runMagnifyParityHarness;
 }
