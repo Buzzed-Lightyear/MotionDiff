@@ -101,6 +101,14 @@ pipeline.setParams({
 controls.setRecordEnabled(CanvasRecorder.isSupported(canvas));
 controls.setRecording(false);
 
+// Magnify needs render-to-float on the WebGL path; the worker fallback
+// always supports it. When unavailable, disable the option (with a
+// tooltip) instead of silently rendering garbage.
+if (pipeline._useWebGL && pipeline._glRenderer && !pipeline._glRenderer.magnifySupported) {
+  controls.setMagnifyAvailable(false);
+  setStatus('Magnify mode unavailable: this GPU lacks float render support', 'info');
+}
+
 // Set initial mode on pipeline
 pipeline.setMode(currentMode);
 
@@ -706,6 +714,11 @@ function processCurrentFrame() {
     ageColorNew: controls.state.ageColorNew,
     ageColorOld: controls.state.ageColorOld,
     fpsCap: controls.state.fpsCap,
+    magAmp: controls.state.magAmp,
+    magFreqLow: controls.state.magFreqLow,
+    magFreqHigh: controls.state.magFreqHigh,
+    magChroma: controls.state.magChroma,
+    magDownsample: controls.state.magDownsample,
   });
 
   pipeline.process(videoEl);
