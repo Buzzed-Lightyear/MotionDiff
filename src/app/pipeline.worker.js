@@ -1,6 +1,7 @@
 import { posyBlend, rawDiff } from '../core/diff.js';
 import { boxBlur } from '../core/blur.js';
 import { accumulate } from '../core/trails.js';
+import { cellEnergies } from '../core/energy.js';
 
 const TRAIL_CAP = 20;
 const trailStore = [];
@@ -95,7 +96,9 @@ self.onmessage = function (e) {
     frameStoreHead,
     params,
     width,
-    height
+    height,
+    energyCols,
+    energyRows,
   } = msg;
 
   const {
@@ -177,6 +180,15 @@ self.onmessage = function (e) {
     boxBlur(diffData, width, height);
   }
 
+  // Sonification energies: post-threshold, pre-composite — the same stage the
+  // WebGL path reads back from. Skipped entirely when no grid is requested.
+  let energyBuffer = null;
+  if (energyCols > 0 && energyRows > 0) {
+    energyBuffer = cellEnergies(
+      diffData, width, height, energyCols, energyRows, algorithm === 'posy'
+    ).buffer;
+  }
+
   trailPush(diffData);
 
   const T = Math.min(trailLength, trailSize);
@@ -198,16 +210,18 @@ self.onmessage = function (e) {
 
   if (!accResult) {
     self.postMessage(
-      { type: 'result', accumulatedBuffer: null, currentFrameBuffer },
-      [currentFrameBuffer]
+      { type: 'result', accumulatedBuffer: null, currentFrameBuffer, energyBuffer, energyCols, energyRows },
+      energyBuffer ? [currentFrameBuffer, energyBuffer] : [currentFrameBuffer]
     );
     return;
   }
 
   const accBuffer = accResult.buffer;
+  const transfers = [accBuffer, currentFrameBuffer];
+  if (energyBuffer) transfers.push(energyBuffer);
 
   self.postMessage(
-    { type: 'result', accumulatedBuffer: accBuffer, currentFrameBuffer },
-    [accBuffer, currentFrameBuffer]
+    { type: 'result', accumulatedBuffer: accBuffer, currentFrameBuffer, energyBuffer, energyCols, energyRows },
+    transfers
   );
 };

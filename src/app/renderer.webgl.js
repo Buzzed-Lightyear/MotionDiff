@@ -91,6 +91,23 @@ void main() {
   fragColor = vec4(sum / 9.0, 1.0);
 }`;
 
+// Mean-downsample for the sonification energy readback. Rendering the diff
+// texture into a cols x rows target is a huge minification, so the sampler's
+// own LOD selection lands deep in the mip chain — each output texel ends up a
+// box average of roughly its cell, which is what cellEnergies computes on the
+// CPU. Exact equality is not required (see SPEC-sonification A6).
+const DOWNSAMPLE_FRAG = `#version 300 es
+precision mediump float;
+
+uniform sampler2D uInput;
+
+in vec2 vUV;
+out vec4 fragColor;
+
+void main() {
+  fragColor = vec4(texture(uInput, vUV).rgb, 1.0);
+}`;
+
 // Two-input accumulation: merges "current best" with "next trail frame".
 // Called iteratively from JS — one draw call per trail frame.
 const ACCUM_FRAG = `#version 300 es
@@ -272,6 +289,7 @@ export class WebGLRenderer {
     this._blurProg = null;
     this._accumProg = null;
     this._compositeProg = null;
+    this._downsampleProg = null;
 
     // Geometry
     this._quadVAO = null;
@@ -299,6 +317,15 @@ export class WebGLRenderer {
     this._accumTex2 = null;
     this._accumFB2 = null;
 
+    // Energy readback target (cols x rows) + preallocated scratch
+    this._energyTex = null;
+    this._energyFB = null;
+    this._energyCols = 0;
+    this._energyRows = 0;
+    this._energyBytes = null;
+    this._energyGrid = null;
+    this._energyIsPosy = true;
+
     this._init();
   }
 
@@ -320,12 +347,16 @@ export class WebGLRenderer {
     const compFs = compileShader(gl, gl.FRAGMENT_SHADER, COMPOSITE_FRAG);
     this._compositeProg = linkProgram(gl, vs, compFs);
 
+    const downFs = compileShader(gl, gl.FRAGMENT_SHADER, DOWNSAMPLE_FRAG);
+    this._downsampleProg = linkProgram(gl, vs, downFs);
+
     // We can delete the individual shader objects now — they're linked
     gl.deleteShader(vs);
     gl.deleteShader(diffFs);
     gl.deleteShader(blurFs);
     gl.deleteShader(accumFs);
     gl.deleteShader(compFs);
+    gl.deleteShader(downFs);
 
     // ── Fullscreen quad geometry ──
     this._quadVAO = gl.createVertexArray();
@@ -489,6 +520,8 @@ export class WebGLRenderer {
     // threshold: 0-60 in UI → normalize to 0.0-0.235 range (60/255 ≈ 0.235)
     gl.uniform1f(gl.getUniformLocation(prog, 'uThreshold'), params.threshold / 255.0);
     gl.uniform1i(gl.getUniformLocation(prog, 'uAlgorithm'), params.algorithm === 'posy' ? 0 : 1);
+    // Remembered so readEnergyGrid knows which baseline the diff texture uses.
+    this._energyIsPosy = params.algorithm === 'posy';
     gl.uniform3fv(gl.getUniformLocation(prog, 'uTintR'), hexToVec3(params.rgbTintR, '#ff0000'));
     gl.uniform3fv(gl.getUniformLocation(prog, 'uTintG'), hexToVec3(params.rgbTintG, '#00ff00'));
     gl.uniform3fv(gl.getUniformLocation(prog, 'uTintB'), hexToVec3(params.rgbTintB, '#0000ff'));
@@ -667,6 +700,81 @@ export class WebGLRenderer {
   }
 
   /**
+   * Downsample the current diff texture (post threshold and blur, pre
+   * composite) into a cols x rows grid of normalized motion energies — the
+   * GPU-side counterpart of core/energy.js `cellEnergies`.
+   *
+   * The readback is tiny (8x4 is 128 bytes) and every buffer is allocated once
+   * per grid size, so the audio update path allocates nothing per frame.
+   *
+   * @param {number} cols
+   * @param {number} rows
+   * @returns {Float32Array|null} cols*rows energies in 0..1, row-major
+   */
+  readEnergyGrid(cols, rows) {
+    const gl = this.gl;
+    const nCols = Math.floor(cols);
+    const nRows = Math.floor(rows);
+    if (!gl || !this._diffTex || nCols < 1 || nRows < 1) return null;
+    if (this.width <= 0 || this.height <= 0) return null;
+
+    if (nCols !== this._energyCols || nRows !== this._energyRows) {
+      this._cleanupTexFB(this._energyTex, this._energyFB);
+      this._energyTex = this._createSizedTexture(nCols, nRows);
+      this._energyFB = createFramebuffer(gl, this._energyTex);
+      this._energyCols = nCols;
+      this._energyRows = nRows;
+      this._energyBytes = new Uint8Array(nCols * nRows * 4);
+      this._energyGrid = new Float32Array(nCols * nRows);
+    }
+
+    // A mip chain is what turns this extreme minification into a box mean
+    // instead of a point sample of one texel per cell.
+    gl.bindTexture(gl.TEXTURE_2D, this._diffTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.generateMipmap(gl.TEXTURE_2D);
+
+    const prog = this._downsampleProg;
+    gl.useProgram(prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._diffTex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uInput'), 0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._energyFB);
+    gl.viewport(0, 0, nCols, nRows);
+    gl.bindVertexArray(this._quadVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    gl.readPixels(0, 0, nCols, nRows, gl.RGBA, gl.UNSIGNED_BYTE, this._energyBytes);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.width, this.height);
+    // Every other pass samples the diff texture at LOD 0 — put the filter back.
+    gl.bindTexture(gl.TEXTURE_2D, this._diffTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+    const baseline = this._energyIsPosy ? 128 : 0;
+    const range = this._energyIsPosy ? 127 : 255;
+    const bytes = this._energyBytes;
+    const grid = this._energyGrid;
+
+    for (let i = 0; i < grid.length; i++) {
+      // Frames are uploaded flipped, so readPixels row 0 is the bottom of the
+      // frame. Re-flip to match cellEnergies, whose row 0 is the top.
+      const srcRow = nRows - 1 - ((i / nCols) | 0);
+      const src = (srcRow * nCols + (i % nCols)) * 4;
+      const mag = (
+        Math.abs(bytes[src] - baseline) +
+        Math.abs(bytes[src + 1] - baseline) +
+        Math.abs(bytes[src + 2] - baseline)
+      ) / 3;
+      grid[i] = Math.min(1, mag / range);
+    }
+
+    return grid;
+  }
+
+  /**
    * Render a fallback solid color when no diff data is available.
    * @param {string} algorithm - 'posy' | 'raw'
    */
@@ -698,18 +806,21 @@ export class WebGLRenderer {
     if (!gl) return;
 
     // Delete programs
-    [this._diffProg, this._blurProg, this._accumProg, this._compositeProg].forEach(p => {
+    [this._diffProg, this._blurProg, this._accumProg, this._compositeProg,
+     this._downsampleProg].forEach(p => {
       if (p) gl.deleteProgram(p);
     });
 
     // Delete textures
     [this._texCurrent, this._texOldR, this._texOldG, this._texOldB,
-     this._diffTex, this._blurTex, this._accumTex, this._accumTex2].forEach(t => {
+     this._diffTex, this._blurTex, this._accumTex, this._accumTex2,
+     this._energyTex].forEach(t => {
       if (t) gl.deleteTexture(t);
     });
 
     // Delete framebuffers
-    [this._diffFB, this._blurFB, this._accumFB, this._accumFB2].forEach(fb => {
+    [this._diffFB, this._blurFB, this._accumFB, this._accumFB2,
+     this._energyFB].forEach(fb => {
       if (fb) gl.deleteFramebuffer(fb);
     });
 
