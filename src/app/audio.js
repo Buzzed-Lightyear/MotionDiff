@@ -97,13 +97,16 @@ export class AudioEngine {
   }
 
   /**
-   * Grid the pipeline should produce, or 0x0 while nothing is listening — the
-   * pipeline skips the readback entirely at 0.
-   * @returns {{cols: number, rows: number}}
+   * Grid the pipeline should produce, or 0 while nothing is listening — the
+   * pipeline skips the readback entirely at 0. Read as two scalars so the
+   * per-frame render loop can ask without allocating.
    */
-  getGridSize() {
-    if (!this._running) return { cols: 0, rows: 0 };
-    return { cols: this.params.cols, rows: this.params.rows };
+  get gridCols() {
+    return this._running ? this.params.cols : 0;
+  }
+
+  get gridRows() {
+    return this._running ? this.params.rows : 0;
   }
 
   /**
@@ -220,15 +223,18 @@ export class AudioEngine {
       this._remapVoices();
     }
 
-    if (p.enabled === false) this.stop();
+    if (p.enabled === false) {
+      this.params.enabled = false;
+      this.stop();
+    }
   }
 
   /**
    * Fade the voices out and stop driving them. The graph stays built so start()
-   * can bring it back without another user gesture.
+   * can bring it back without another user gesture. This does NOT clear
+   * `enabled` — playback pausing shouldn't undo the listener's choice.
    */
   stop() {
-    this.params.enabled = false;
     if (!this._running) return;
 
     this._running = false;

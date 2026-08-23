@@ -1,9 +1,11 @@
-import { Pipeline } from './app/pipeline.js';
+import { Pipeline, debugEnergyParity } from './app/pipeline.js';
+import { AudioEngine } from './app/audio.js';
 import { attachHlsSource, isDashUrl, isHlsUrl, isYouTubeUrl } from './app/loader.js';
 import { CanvasRecorder } from './app/exporter.js';
 import { render, renderBlank } from './app/renderer.js';
 import { buildSourceProfile } from './app/source-profile.js';
 import { analyzeSample } from './core/analyze.js';
+import { initAudioPanel } from './ui/audio-panel.js';
 import { initControls } from './ui/controls.js';
 import { initHelp } from './ui/help.js';
 import { initPresets } from './ui/presets.js';
@@ -14,6 +16,7 @@ import { setStatus } from './ui/status.js';
 const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
 const pipeline = new Pipeline();
+const audioEngine = new AudioEngine();
 const videoEl = document.getElementById('videoEl');
 const canvas = document.getElementById('outputCanvas');
 
@@ -42,6 +45,7 @@ const theaterBackdrop = document.getElementById('theaterBackdrop');
 const theaterCloseBtn = document.getElementById('theaterCloseBtn');
 initHelp();
 initColorThemes();
+initAudioPanel({ engine: audioEngine, container: document.getElementById('audioPanel') });
 
 function setDisplayMode(mode) {
   currentMode = mode;
@@ -704,6 +708,11 @@ function processCurrentFrame() {
   });
 
   pipeline.process(videoEl);
+
+  // One audio update per processed frame. gridCols is 0 unless the engine is
+  // running, and the pipeline skips the readback entirely at 0.
+  const grid = pipeline.getEnergyGrid(audioEngine.gridCols, audioEngine.gridRows);
+  if (grid) audioEngine.update(grid);
 }
 
 function tick() {
@@ -771,6 +780,8 @@ function startLoop() {
   if (loopRunning) return;
   loopRunning = true;
   resetFrameMetrics();
+  // The AudioContext already has its gesture; this only un-pauses the voices.
+  if (audioEngine.params.enabled) audioEngine.start();
 
   if (HAS_RVFC) {
     rvfcId = videoEl.requestVideoFrameCallback(rvfcTick);
@@ -782,6 +793,8 @@ function startLoop() {
 function stopLoop() {
   loopRunning = false;
   resetFrameMetrics();
+  // No frames means no energy updates — fade out instead of holding a drone.
+  audioEngine.stop();
   if (animFrameId !== null) {
     cancelAnimationFrame(animFrameId);
     animFrameId = null;
@@ -829,6 +842,15 @@ document.addEventListener('keydown', (event) => {
     setTheaterActive(false);
   }
 });
+
+window.addEventListener('pagehide', () => {
+  audioEngine.dispose();
+});
+
+if (import.meta.env.DEV) {
+  // SPEC-sonification A6: compare the WebGL readback against the core math.
+  window.__motionDiffEnergyParity = (cols, rows) => debugEnergyParity(pipeline, cols, rows);
+}
 
 videoEl.addEventListener('seeked', () => {
   timeline.syncNow();
