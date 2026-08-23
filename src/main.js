@@ -1,7 +1,7 @@
 import { Pipeline } from './app/pipeline.js';
 import { attachHlsSource, isDashUrl, isHlsUrl, isYouTubeUrl } from './app/loader.js';
 import { CanvasRecorder } from './app/exporter.js';
-import { render, renderBlank } from './app/renderer.js';
+import { render, renderBlank, renderMagnify } from './app/renderer.js';
 import { buildSourceProfile } from './app/source-profile.js';
 import { analyzeSample } from './core/analyze.js';
 import { initControls } from './ui/controls.js';
@@ -678,6 +678,11 @@ async function handleAutoConfigure() {
 pipeline.onResult = (result) => {
   if (!loopRunning || !videoLoaded) return;
   if (pipeline._useWebGL) return; // WebGL renders directly in process()
+
+  if (result && result.magnified) {
+    renderMagnify(result.magnified, outputCtx, canvas.width, canvas.height);
+    return;
+  }
 
   if (result && result.accumulated) {
     render(currentMode, result.accumulated, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm, controls.state.ageColorEnabled);

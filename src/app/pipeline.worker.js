@@ -1,8 +1,18 @@
 import { posyBlend, rawDiff } from '../core/diff.js';
 import { boxBlur } from '../core/blur.js';
 import { accumulate } from '../core/trails.js';
+import { emaAlpha, seedStates, magnifyFrame } from '../core/magnify.js';
 
 const TRAIL_CAP = 20;
+
+// ── Magnify EMA state (Float32, normalized 0..1, RGBA layout) ──
+let magFast = null;
+let magSlow = null;
+
+function magClear() {
+  magFast = null;
+  magSlow = null;
+}
 const trailStore = [];
 let trailHead = -1;
 let trailSize = 0;
@@ -83,6 +93,12 @@ self.onmessage = function (e) {
 
   if (msg.type === 'clear') {
     trailClear();
+    magClear();
+    return;
+  }
+
+  if (msg.type === 'magReset') {
+    magClear();
     return;
   }
 
@@ -115,6 +131,49 @@ self.onmessage = function (e) {
 
   const storeCap = frameStoreBuffers.length;
   const curData = new Uint8ClampedArray(currentFrameBuffer);
+
+  if (params.algorithm === 'magnify') {
+    // Re-seed on first frame or size change so the first magnified
+    // frame equals the input (no flash).
+    if (!magFast || magFast.length !== curData.length) {
+      magFast = new Float32Array(curData.length);
+      magSlow = new Float32Array(curData.length);
+      seedStates(curData, magFast, magSlow);
+    }
+
+    // Blur applies pre-EMA only; the band is added onto the unblurred frame.
+    let emaInput = curData;
+    if (params.blurEnabled) {
+      emaInput = new Uint8ClampedArray(curData);
+      boxBlur(emaInput, width, height);
+    }
+
+    const magnified = new Uint8ClampedArray(curData.length);
+    magnifyFrame(
+      emaInput,
+      magFast,
+      magSlow,
+      magnified,
+      emaAlpha(params.magFreqHigh, msg.dtMs),
+      emaAlpha(params.magFreqLow, msg.dtMs),
+      params.magAmp,
+      params.magChroma,
+      curData
+    );
+
+    const magnifiedBuffer = magnified.buffer;
+    self.postMessage(
+      {
+        type: 'result',
+        magnifiedBuffer,
+        magnifiedWidth: width,
+        magnifiedHeight: height,
+        currentFrameBuffer,
+      },
+      [magnifiedBuffer, currentFrameBuffer]
+    );
+    return;
+  }
 
   if (frameStoreSize < 2) {
     self.postMessage(
