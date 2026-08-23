@@ -1,3 +1,33 @@
+// Scratch canvas for upscaling worker-produced magnify frames.
+let magScaleCanvas = null;
+let magScaleCtx = null;
+
+/**
+ * Draw a magnified frame produced by the worker path. It is a plain RGBA
+ * frame; when it arrives at the downsampled magnify processing size it is
+ * linearly upsampled to the output canvas.
+ */
+export function renderMagnify(magnified, outputCtx, width, height) {
+  if (!magnified) return;
+
+  if (magnified.width === width && magnified.height === height) {
+    outputCtx.putImageData(magnified, 0, 0);
+    return;
+  }
+
+  if (!magScaleCanvas) {
+    magScaleCanvas = document.createElement('canvas');
+    magScaleCtx = magScaleCanvas.getContext('2d');
+  }
+  if (magScaleCanvas.width !== magnified.width || magScaleCanvas.height !== magnified.height) {
+    magScaleCanvas.width = magnified.width;
+    magScaleCanvas.height = magnified.height;
+  }
+  magScaleCtx.putImageData(magnified, 0, 0);
+  outputCtx.imageSmoothingEnabled = true;
+  outputCtx.drawImage(magScaleCanvas, 0, 0, width, height);
+}
+
 export function renderBlank(outputCtx, width, height, algorithm, ageColorEnabled = false) {
   if (algorithm === 'posy' && !ageColorEnabled) {
     outputCtx.fillStyle = '#808080';

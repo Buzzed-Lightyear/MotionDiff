@@ -1,6 +1,7 @@
 import PipelineWorker from './pipeline.worker.js?worker';
 import { WebGLRenderer } from './renderer.webgl.js';
 import { buildSourceProfile } from './source-profile.js';
+import { emaAlpha } from '../core/magnify.js';
 import { posyBlend } from '../core/diff.js';
 import { cellEnergies } from '../core/energy.js';
 
@@ -21,6 +22,13 @@ export class Pipeline {
     this.height = 0;
     this._processWidth = DEFAULT_PROCESS_WIDTH;
     this._lastFrameTime = 0;
+
+    // ── Magnify mode ──
+    // Timestamp of the last processed magnify frame (real dt for emaAlpha)
+    this._magLastTime = 0;
+    // Downsampled capture canvas for the worker magnify path
+    this._magCapCanvas = null;
+    this._magCapCtx = null;
 
     // ── Frame store (circular buffer of ImageData for Worker fallback
     //    or ArrayBuffer references for WebGL texture uploads) ──
@@ -69,6 +77,11 @@ export class Pipeline {
       ageColorNew: '#ff4400',
       ageColorOld: '#0044ff',
       fpsCap: null,
+      magAmp: 15,
+      magFreqLow: 0.7,
+      magFreqHigh: 2.0,
+      magChroma: 1.0,
+      magDownsample: 2,
     };
 
     this.onResult = null;
@@ -79,6 +92,10 @@ export class Pipeline {
     this._outputCanvas = outputCanvasEl;
     this._capCanvas = document.createElement('canvas');
     this._capCtx = this._capCanvas.getContext('2d', { willReadFrequently: true });
+
+    // Seeks must re-seed the magnify EMA states (avoids a flash while
+    // the band-pass re-converges on unrelated content).
+    videoEl.addEventListener('seeked', () => this.resetMagnifyState());
 
     // Try WebGL2 first
     try {
@@ -104,6 +121,15 @@ export class Pipeline {
       if (msg.type !== 'result') return;
 
       this._workerBusy = false;
+
+      if (msg.magnifiedBuffer) {
+        const magArr = new Uint8ClampedArray(msg.magnifiedBuffer);
+        const magnified = new ImageData(magArr, msg.magnifiedWidth, msg.magnifiedHeight);
+        if (this.onResult) {
+          this.onResult({ magnified });
+        }
+        return;
+      }
 
       let accumulated = null;
       let currentFrame = null;
@@ -137,6 +163,7 @@ export class Pipeline {
   stop() {
     this._workerBusy = false;
     this._lastFrameTime = 0;
+    this._magLastTime = 0;
   }
 
   clearState() {
@@ -154,6 +181,22 @@ export class Pipeline {
     }
     this._workerBusy = false;
     this._lastFrameTime = 0;
+    this._magLastTime = 0;
+  }
+
+  /**
+   * Re-seed the magnify EMA states from the next frame. Called on source
+   * change, seek, resize, and when switching into magnify mode — the same
+   * situations that clear trails.
+   */
+  resetMagnifyState() {
+    this._magLastTime = 0;
+    if (this._useWebGL && this._glRenderer) {
+      this._glRenderer.resetMagnifyState?.();
+    }
+    if (this._worker) {
+      this._worker.postMessage({ type: 'magReset' });
+    }
   }
 
   setHlsInstance(hls) {
@@ -181,7 +224,18 @@ export class Pipeline {
     if (params.threshold !== undefined) this.params.threshold = params.threshold;
     if (params.trailLength !== undefined) this.params.trailLength = params.trailLength;
     if (params.channelSpread !== undefined) this.params.channelSpread = params.channelSpread;
-    if (params.algorithm !== undefined) this.params.algorithm = params.algorithm;
+    if (params.algorithm !== undefined && params.algorithm !== this.params.algorithm) {
+      const wasMagnify = this.params.algorithm === 'magnify';
+      this.params.algorithm = params.algorithm;
+      if (params.algorithm === 'magnify') {
+        this.resetMagnifyState();
+      } else if (wasMagnify) {
+        // Trails were not fed while magnifying; drop the stale ring
+        // instead of showing pre-magnify ghosts.
+        if (this._useWebGL && this._glRenderer) this._glRenderer.clearTrails();
+        if (this._worker) this._worker.postMessage({ type: 'clear' });
+      }
+    }
     if (params.blurEnabled !== undefined) this.params.blurEnabled = params.blurEnabled;
     if (params.ageColorEnabled !== undefined) this.params.ageColorEnabled = params.ageColorEnabled;
     if (params.rgbTintR !== undefined) this.params.rgbTintR = params.rgbTintR;
@@ -192,6 +246,14 @@ export class Pipeline {
     if (params.fpsCap !== undefined && params.fpsCap !== this.params.fpsCap) {
       this.params.fpsCap = params.fpsCap;
       this.logProcessingConfig();
+    }
+    if (params.magAmp !== undefined) this.params.magAmp = params.magAmp;
+    if (params.magFreqLow !== undefined) this.params.magFreqLow = params.magFreqLow;
+    if (params.magFreqHigh !== undefined) this.params.magFreqHigh = params.magFreqHigh;
+    if (params.magChroma !== undefined) this.params.magChroma = params.magChroma;
+    if (params.magDownsample !== undefined && params.magDownsample !== this.params.magDownsample) {
+      this.params.magDownsample = params.magDownsample;
+      this.resetMagnifyState();
     }
   }
 
@@ -355,10 +417,30 @@ export class Pipeline {
    */
   process(video) {
     if (this._useWebGL) {
-      this._processWebGL(video);
+      if (this.params.algorithm === 'magnify') {
+        this._processMagnifyWebGL(video);
+      } else {
+        this._processWebGL(video);
+      }
     } else {
-      this._processWorker(video);
+      if (this.params.algorithm === 'magnify') {
+        this._processMagnifyWorker(video);
+      } else {
+        this._processWorker(video);
+      }
     }
+  }
+
+  /**
+   * Real frame interval for the magnify EMAs, measured between processed
+   * frames. Falls back to 30 fps on the first frame after a reset.
+   */
+  _magFrameDt(now) {
+    const dtMs = this._magLastTime > 0
+      ? Math.min(Math.max(now - this._magLastTime, 0.1), 1000)
+      : 1000 / 30;
+    this._magLastTime = now;
+    return dtMs;
   }
 
   // ── WebGL Path ──────────────────────────────────────────────
@@ -441,6 +523,92 @@ export class Pipeline {
    */
   setMode(mode) {
     this._currentMode = mode;
+  }
+
+  // ── Magnify: WebGL path ─────────────────────────────────────
+
+  _processMagnifyWebGL(video) {
+    const frame = this.captureFrame(video);
+    if (!frame) return;
+
+    // Keep the lookback store warm so switching back to Posy/Raw behaves.
+    this._storePush(frame);
+
+    const gl = this._glRenderer;
+    if (!gl.magnifySupported) {
+      // The UI disables the magnify option when unsupported; if we still
+      // get here, show a blank frame rather than rendering garbage.
+      gl.renderBlank(this.params.algorithm, false);
+      return;
+    }
+
+    const dtMs = this._magFrameDt(performance.now());
+    gl.uploadImageData(frame, 'current');
+    const ok = gl.renderMagnify({
+      alphaFast: emaAlpha(this.params.magFreqHigh, dtMs),
+      alphaSlow: emaAlpha(this.params.magFreqLow, dtMs),
+      amp: this.params.magAmp,
+      chroma: this.params.magChroma,
+      downsample: this.params.magDownsample,
+      blurEnabled: this.params.blurEnabled,
+    });
+    if (!ok) {
+      gl.renderBlank(this.params.algorithm, false);
+    }
+  }
+
+  // ── Magnify: Worker path (fallback) ─────────────────────────
+
+  /**
+   * Capture the current frame at the magnify processing size. The
+   * downsampling is the spatial pooling; the worker path is capped at
+   * 320 px wide (correctness over speed on the CPU fallback).
+   */
+  _captureMagnifyFrame(video) {
+    if (!this.width || !this.height) return null;
+    const ds = this.params.magDownsample || 1;
+    const w = Math.max(2, Math.min(320, Math.round(this.width / ds)));
+    const h = Math.max(2, Math.round(this.height * (w / this.width)));
+
+    if (!this._magCapCanvas) {
+      this._magCapCanvas = document.createElement('canvas');
+      this._magCapCtx = this._magCapCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    if (this._magCapCanvas.width !== w || this._magCapCanvas.height !== h) {
+      this._magCapCanvas.width = w;
+      this._magCapCanvas.height = h;
+    }
+
+    try {
+      this._magCapCtx.drawImage(video, 0, 0, w, h);
+      return this._magCapCtx.getImageData(0, 0, w, h);
+    } catch {
+      return null;
+    }
+  }
+
+  _processMagnifyWorker(video) {
+    const frame = this._captureMagnifyFrame(video);
+    if (!frame) return;
+
+    if (this._workerBusy) return;
+    this._workerBusy = true;
+
+    const dtMs = this._magFrameDt(performance.now());
+    const currentFrameBuffer = frame.data.buffer;
+
+    // Magnify needs no frame-store lookback — skip the store copies.
+    this._worker.postMessage({
+      type: 'process',
+      currentFrameBuffer,
+      frameStoreBuffers: [],
+      frameStoreSize: 0,
+      frameStoreHead: -1,
+      params: { ...this.params },
+      dtMs,
+      width: frame.width,
+      height: frame.height,
+    }, [currentFrameBuffer]);
   }
 
   // ── Worker Path (fallback) ──────────────────────────────────

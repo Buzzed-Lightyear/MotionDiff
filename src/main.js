@@ -2,7 +2,7 @@ import { Pipeline, debugEnergyParity } from './app/pipeline.js';
 import { AudioEngine } from './app/audio.js';
 import { attachHlsSource, isDashUrl, isHlsUrl, isYouTubeUrl } from './app/loader.js';
 import { CanvasRecorder } from './app/exporter.js';
-import { render, renderBlank } from './app/renderer.js';
+import { render, renderBlank, renderMagnify } from './app/renderer.js';
 import { buildSourceProfile } from './app/source-profile.js';
 import { analyzeSample } from './core/analyze.js';
 import { initAudioPanel } from './ui/audio-panel.js';
@@ -104,6 +104,14 @@ pipeline.setParams({
 });
 controls.setRecordEnabled(CanvasRecorder.isSupported(canvas));
 controls.setRecording(false);
+
+// Magnify needs render-to-float on the WebGL path; the worker fallback
+// always supports it. When unavailable, disable the option (with a
+// tooltip) instead of silently rendering garbage.
+if (pipeline._useWebGL && pipeline._glRenderer && !pipeline._glRenderer.magnifySupported) {
+  controls.setMagnifyAvailable(false);
+  setStatus('Magnify mode unavailable: this GPU lacks float render support', 'info');
+}
 
 // Set initial mode on pipeline
 pipeline.setMode(currentMode);
@@ -683,6 +691,11 @@ pipeline.onResult = (result) => {
   if (!loopRunning || !videoLoaded) return;
   if (pipeline._useWebGL) return; // WebGL renders directly in process()
 
+  if (result && result.magnified) {
+    renderMagnify(result.magnified, outputCtx, canvas.width, canvas.height);
+    return;
+  }
+
   if (result && result.accumulated) {
     render(currentMode, result.accumulated, result.currentFrame, outputCtx, pipeline.width, pipeline.height, controls.state.algorithm, controls.state.ageColorEnabled);
   } else if (result && result.currentFrame) {
@@ -705,6 +718,11 @@ function processCurrentFrame() {
     ageColorNew: controls.state.ageColorNew,
     ageColorOld: controls.state.ageColorOld,
     fpsCap: controls.state.fpsCap,
+    magAmp: controls.state.magAmp,
+    magFreqLow: controls.state.magFreqLow,
+    magFreqHigh: controls.state.magFreqHigh,
+    magChroma: controls.state.magChroma,
+    magDownsample: controls.state.magDownsample,
   });
 
   pipeline.process(videoEl);
