@@ -4,6 +4,9 @@ import { accumulate } from '../core/trails.js';
 import { emaAlpha, seedStates, magnifyFrame } from '../core/magnify.js';
 
 const TRAIL_CAP = 20;
+const trailStore = [];
+let trailHead = -1;
+let trailSize = 0;
 
 // ── Magnify EMA state (Float32, normalized 0..1, RGBA layout) ──
 let magFast = null;
@@ -13,9 +16,6 @@ function magClear() {
   magFast = null;
   magSlow = null;
 }
-const trailStore = [];
-let trailHead = -1;
-let trailSize = 0;
 
 function trailPush(data) {
   trailHead = (trailHead + 1) % TRAIL_CAP;
@@ -133,19 +133,20 @@ self.onmessage = function (e) {
   const curData = new Uint8ClampedArray(currentFrameBuffer);
 
   if (params.algorithm === 'magnify') {
-    // Re-seed on first frame or size change so the first magnified
-    // frame equals the input (no flash).
-    if (!magFast || magFast.length !== curData.length) {
-      magFast = new Float32Array(curData.length);
-      magSlow = new Float32Array(curData.length);
-      seedStates(curData, magFast, magSlow);
-    }
-
     // Blur applies pre-EMA only; the band is added onto the unblurred frame.
     let emaInput = curData;
     if (params.blurEnabled) {
       emaInput = new Uint8ClampedArray(curData);
       boxBlur(emaInput, width, height);
+    }
+
+    // Re-seed on first frame or size change so the first magnified
+    // frame equals the input (no flash). Seed from the EMA input (the
+    // blurred frame when blur is on) so the band starts at exactly zero.
+    if (!magFast || magFast.length !== curData.length) {
+      magFast = new Float32Array(curData.length);
+      magSlow = new Float32Array(curData.length);
+      seedStates(emaInput, magFast, magSlow);
     }
 
     const magnified = new Uint8ClampedArray(curData.length);
