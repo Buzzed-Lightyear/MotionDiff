@@ -109,6 +109,56 @@ export function initControls({
   const dotDiff = document.getElementById('dotDiff');
   const placeholderOriginal = document.getElementById('placeholderOriginal');
   const placeholderDiff = document.getElementById('placeholderDiff');
+
+  // Build the magnify params section inside its index.html container
+  // (index.html stays a one-container-per-feature shell). This runs
+  // before the range-input query below so the generic slider wiring
+  // picks these up too.
+  const magnifyControls = document.getElementById('magnifyControls');
+  if (magnifyControls) {
+    magnifyControls.innerHTML = `
+      <span class="subsection-label">Magnify</span>
+      <div class="slider-grid">
+        <div class="slider-cell">
+          <span class="ctrl-label">Amplify</span>
+          <input type="range" id="sliderMagAmp" min="1" max="60" step="1" value="15">
+          <span class="ctrl-val" id="valMagAmp">15x</span>
+        </div>
+        <div class="slider-cell">
+          <span class="ctrl-label">Band Low Hz</span>
+          <input type="range" id="sliderMagFreqLow" min="0.05" max="5" step="0.05" value="0.7">
+          <span class="ctrl-val" id="valMagFreqLow">0.70</span>
+        </div>
+        <div class="slider-cell">
+          <span class="ctrl-label">Band High Hz</span>
+          <input type="range" id="sliderMagFreqHigh" min="0.1" max="10" step="0.1" value="2">
+          <span class="ctrl-val" id="valMagFreqHigh">2.00</span>
+        </div>
+        <div class="slider-cell">
+          <span class="ctrl-label">Chroma</span>
+          <input type="range" id="sliderMagChroma" min="0" max="1" step="0.05" value="1">
+          <span class="ctrl-val" id="valMagChroma">1.00</span>
+        </div>
+      </div>
+      <div class="slider-cell">
+        <span class="ctrl-label">Downsample</span>
+        <select id="selectMagDownsample" class="control-select" aria-label="Magnify downsample">
+          <option value="1">1&times; (full res)</option>
+          <option value="2" selected>2&times;</option>
+          <option value="4">4&times;</option>
+        </select>
+      </div>`;
+  }
+  const sliderMagAmp = document.getElementById('sliderMagAmp');
+  const sliderMagFreqLow = document.getElementById('sliderMagFreqLow');
+  const sliderMagFreqHigh = document.getElementById('sliderMagFreqHigh');
+  const sliderMagChroma = document.getElementById('sliderMagChroma');
+  const selectMagDownsample = document.getElementById('selectMagDownsample');
+  const valMagAmp = document.getElementById('valMagAmp');
+  const valMagFreqLow = document.getElementById('valMagFreqLow');
+  const valMagFreqHigh = document.getElementById('valMagFreqHigh');
+  const valMagChroma = document.getElementById('valMagChroma');
+
   const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
   const algorithmButtons = Array.from(btnAlgo?.querySelectorAll('[data-algorithm]') || []);
   const displayButtons = Array.from(btnDisplay?.querySelectorAll('[data-mode]') || []);
@@ -139,9 +189,15 @@ export function initControls({
     ageColorOld: '#0044ff',
     processingWidth: 640,
     fpsCap: null,
+    magAmp: 15,
+    magFreqLow: 0.7,
+    magFreqHigh: 2.0,
+    magChroma: 1.0,
+    magDownsample: 2,
   };
   const pickrs = {};
   let activePresetButton = null;
+  let magnifyAvailable = true;
 
   function emitParamChange(params) {
     if (onParamChange) onParamChange(params);
@@ -254,6 +310,95 @@ export function initControls({
     if (notify) emitParamChange({ channelSpread: v });
   }
 
+  function updateMagnifyVisibility() {
+    const isMagnify = state.algorithm === 'magnify';
+    if (magnifyControls) magnifyControls.hidden = !isMagnify;
+
+    // Frame offset, channel spread, and trails have no effect in magnify
+    // mode — gray them out rather than hiding them.
+    [sliderOffset, sliderSpread, sliderTrail].forEach((slider) => {
+      if (!slider) return;
+      slider.disabled = isMagnify;
+      const cell = slider.closest('.slider-cell');
+      if (cell) {
+        cell.style.opacity = isMagnify ? '0.45' : '';
+        cell.title = isMagnify ? 'No effect in Magnify mode' : '';
+      }
+    });
+  }
+
+  function setMagAmp(value, notify = true) {
+    const v = Math.min(60, Math.max(1, Math.round(Number.parseFloat(value)) || 1));
+    if (sliderMagAmp) sliderMagAmp.value = String(v);
+    setRangeFill(sliderMagAmp);
+    state.magAmp = v;
+    if (valMagAmp) valMagAmp.textContent = `${v}x`;
+    if (notify) triggerValuePop(valMagAmp);
+    if (notify) emitParamChange({ magAmp: v });
+  }
+
+  function setMagFreqLow(value, notify = true) {
+    let v = Number.parseFloat(value);
+    if (!Number.isFinite(v)) return;
+    // Keep the band valid: high must stay above low
+    v = Math.min(Math.max(v, 0.05), 5, state.magFreqHigh - 0.05);
+    v = Math.round(v * 100) / 100;
+    if (sliderMagFreqLow) sliderMagFreqLow.value = String(v);
+    setRangeFill(sliderMagFreqLow);
+    state.magFreqLow = v;
+    if (valMagFreqLow) valMagFreqLow.textContent = v.toFixed(2);
+    if (notify) triggerValuePop(valMagFreqLow);
+    if (notify) emitParamChange({ magFreqLow: v });
+  }
+
+  function setMagFreqHigh(value, notify = true) {
+    let v = Number.parseFloat(value);
+    if (!Number.isFinite(v)) return;
+    v = Math.max(Math.min(v, 10), 0.1, state.magFreqLow + 0.05);
+    v = Math.round(v * 100) / 100;
+    if (sliderMagFreqHigh) sliderMagFreqHigh.value = String(v);
+    setRangeFill(sliderMagFreqHigh);
+    state.magFreqHigh = v;
+    if (valMagFreqHigh) valMagFreqHigh.textContent = v.toFixed(2);
+    if (notify) triggerValuePop(valMagFreqHigh);
+    if (notify) emitParamChange({ magFreqHigh: v });
+  }
+
+  function setMagChroma(value, notify = true) {
+    let v = Number.parseFloat(value);
+    if (!Number.isFinite(v)) return;
+    v = Math.round(Math.min(Math.max(v, 0), 1) * 100) / 100;
+    if (sliderMagChroma) sliderMagChroma.value = String(v);
+    setRangeFill(sliderMagChroma);
+    state.magChroma = v;
+    if (valMagChroma) valMagChroma.textContent = v.toFixed(2);
+    if (notify) triggerValuePop(valMagChroma);
+    if (notify) emitParamChange({ magChroma: v });
+  }
+
+  function setMagDownsample(value, notify = true) {
+    const parsed = Number.parseInt(value, 10);
+    const v = [1, 2, 4].includes(parsed) ? parsed : 2;
+    if (selectMagDownsample) selectMagDownsample.value = String(v);
+    state.magDownsample = v;
+    if (notify) emitParamChange({ magDownsample: v });
+  }
+
+  function setMagnifyAvailable(available) {
+    magnifyAvailable = Boolean(available);
+    const magBtn = algorithmButtons.find((button) => button.dataset.algorithm === 'magnify');
+    if (magBtn) {
+      magBtn.disabled = !magnifyAvailable;
+      magBtn.style.opacity = magnifyAvailable ? '' : '0.45';
+      magBtn.title = magnifyAvailable
+        ? ''
+        : 'Unavailable: this GPU lacks float render targets (EXT_color_buffer_float)';
+    }
+    if (!magnifyAvailable && state.algorithm === 'magnify') {
+      setAlgorithm('posy');
+    }
+  }
+
   function updateAgeColorVisibility() {
     const algorithmAllowsAgeColor = state.algorithm === 'posy';
     if (btnAgeColor) {
@@ -278,6 +423,9 @@ export function initControls({
   }
 
   function setAlgorithm(algorithm, notify = true) {
+    if (algorithm === 'magnify' && !magnifyAvailable) {
+      algorithm = 'posy';
+    }
     state.algorithm = algorithm;
     algorithmButtons.forEach((button) => {
       const isActive = button.dataset.algorithm === algorithm;
@@ -287,6 +435,7 @@ export function initControls({
       else button.removeAttribute('data-active');
     });
     updateAgeColorVisibility();
+    updateMagnifyVisibility();
     if (notify) emitParamChange({ algorithm });
   }
 
@@ -412,6 +561,11 @@ export function initControls({
     if (params.ageColorOld !== undefined) setAgeGradient('ageColorOld', params.ageColorOld, false);
     if (params.processingWidth !== undefined) setProcessingWidth(params.processingWidth, false);
     if (params.fpsCap !== undefined) setFpsCap(params.fpsCap, false);
+    if (params.magAmp !== undefined) setMagAmp(params.magAmp, false);
+    if (params.magFreqLow !== undefined) setMagFreqLow(params.magFreqLow, false);
+    if (params.magFreqHigh !== undefined) setMagFreqHigh(params.magFreqHigh, false);
+    if (params.magChroma !== undefined) setMagChroma(params.magChroma, false);
+    if (params.magDownsample !== undefined) setMagDownsample(params.magDownsample, false);
   }
 
   if (btnCamera) {
@@ -478,6 +632,26 @@ export function initControls({
 
   sliderSpread.addEventListener('input', () => {
     setChannelSpread(sliderSpread.value);
+  });
+
+  sliderMagAmp?.addEventListener('input', () => {
+    setMagAmp(sliderMagAmp.value);
+  });
+
+  sliderMagFreqLow?.addEventListener('input', () => {
+    setMagFreqLow(sliderMagFreqLow.value);
+  });
+
+  sliderMagFreqHigh?.addEventListener('input', () => {
+    setMagFreqHigh(sliderMagFreqHigh.value);
+  });
+
+  sliderMagChroma?.addEventListener('input', () => {
+    setMagChroma(sliderMagChroma.value);
+  });
+
+  selectMagDownsample?.addEventListener('change', () => {
+    setMagDownsample(selectMagDownsample.value);
   });
 
   selectResolution?.addEventListener('change', () => {
@@ -601,6 +775,11 @@ export function initControls({
   setAlgorithm(state.algorithm, false);
   setBlurEnabled(state.blurEnabled, false);
   setAgeColorEnabled(state.ageColorEnabled, false);
+  setMagAmp(state.magAmp, false);
+  setMagFreqLow(state.magFreqLow, false);
+  setMagFreqHigh(state.magFreqHigh, false);
+  setMagChroma(state.magChroma, false);
+  setMagDownsample(state.magDownsample, false);
   setDisplayMode(state.displayMode);
   setPlaybackRate(playbackRateSelect?.value || '1', false);
   rangeInputs.forEach((input) => {
@@ -633,6 +812,12 @@ export function initControls({
     setAgeGradient,
     setProcessingWidth,
     setFpsCap,
+    setMagAmp,
+    setMagFreqLow,
+    setMagFreqHigh,
+    setMagChroma,
+    setMagDownsample,
+    setMagnifyAvailable,
     applyParams,
     setAutoBusy(isBusy) {
       if (!autoConfigBtn) return;

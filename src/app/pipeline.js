@@ -1,6 +1,9 @@
 import PipelineWorker from './pipeline.worker.js?worker';
 import { WebGLRenderer } from './renderer.webgl.js';
 import { buildSourceProfile } from './source-profile.js';
+import { emaAlpha } from '../core/magnify.js';
+import { posyBlend } from '../core/diff.js';
+import { cellEnergies } from '../core/energy.js';
 
 const DEFAULT_PROCESS_WIDTH = 640;
 const FRAME_STORE_CAP = 120;
@@ -20,6 +23,13 @@ export class Pipeline {
     this._processWidth = DEFAULT_PROCESS_WIDTH;
     this._lastFrameTime = 0;
 
+    // ── Magnify mode ──
+    // Timestamp of the last processed magnify frame (real dt for emaAlpha)
+    this._magLastTime = 0;
+    // Downsampled capture canvas for the worker magnify path
+    this._magCapCanvas = null;
+    this._magCapCtx = null;
+
     // ── Frame store (circular buffer of ImageData for Worker fallback
     //    or ArrayBuffer references for WebGL texture uploads) ──
     this._frameStore = new Array(FRAME_STORE_CAP);
@@ -33,6 +43,14 @@ export class Pipeline {
 
     this._currentFrame = null;
     this._sourceProfile = buildSourceProfile('file', HAS_RVFC);
+
+    // ── Sonification energy grid (see core/energy.js) ──
+    // Size 0 means "nobody is listening" — neither path computes a grid.
+    this._energyCols = 0;
+    this._energyRows = 0;
+    this._energyGrid = null;
+    this._energyGridCols = 0;
+    this._energyGridRows = 0;
 
     /** @type {boolean} Whether WebGL is active */
     this._useWebGL = false;
@@ -59,6 +77,11 @@ export class Pipeline {
       ageColorNew: '#ff4400',
       ageColorOld: '#0044ff',
       fpsCap: null,
+      magAmp: 15,
+      magFreqLow: 0.7,
+      magFreqHigh: 2.0,
+      magChroma: 1.0,
+      magDownsample: 2,
     };
 
     this.onResult = null;
@@ -69,6 +92,10 @@ export class Pipeline {
     this._outputCanvas = outputCanvasEl;
     this._capCanvas = document.createElement('canvas');
     this._capCtx = this._capCanvas.getContext('2d', { willReadFrequently: true });
+
+    // Seeks must re-seed the magnify EMA states (avoids a flash while
+    // the band-pass re-converges on unrelated content).
+    videoEl.addEventListener('seeked', () => this.resetMagnifyState());
 
     // Try WebGL2 first
     try {
@@ -95,6 +122,15 @@ export class Pipeline {
 
       this._workerBusy = false;
 
+      if (msg.magnifiedBuffer) {
+        const magArr = new Uint8ClampedArray(msg.magnifiedBuffer);
+        const magnified = new ImageData(magArr, msg.magnifiedWidth, msg.magnifiedHeight);
+        if (this.onResult) {
+          this.onResult({ magnified });
+        }
+        return;
+      }
+
       let accumulated = null;
       let currentFrame = null;
 
@@ -106,6 +142,12 @@ export class Pipeline {
       if (msg.currentFrameBuffer) {
         const curArr = new Uint8ClampedArray(msg.currentFrameBuffer);
         currentFrame = new ImageData(curArr, this.width, this.height);
+      }
+
+      if (msg.energyBuffer) {
+        this._energyGrid = new Float32Array(msg.energyBuffer);
+        this._energyGridCols = msg.energyCols;
+        this._energyGridRows = msg.energyRows;
       }
 
       if (this.onResult) {
@@ -121,12 +163,14 @@ export class Pipeline {
   stop() {
     this._workerBusy = false;
     this._lastFrameTime = 0;
+    this._magLastTime = 0;
   }
 
   clearState() {
     this._frameStore = new Array(FRAME_STORE_CAP);
     this._storeHead = -1;
     this._storeSize = 0;
+    this._energyGrid = null;
 
     if (this._useWebGL && this._glRenderer) {
       this._glRenderer.clearTrails();
@@ -137,6 +181,22 @@ export class Pipeline {
     }
     this._workerBusy = false;
     this._lastFrameTime = 0;
+    this._magLastTime = 0;
+  }
+
+  /**
+   * Re-seed the magnify EMA states from the next frame. Called on source
+   * change, seek, resize, and when switching into magnify mode — the same
+   * situations that clear trails.
+   */
+  resetMagnifyState() {
+    this._magLastTime = 0;
+    if (this._useWebGL && this._glRenderer) {
+      this._glRenderer.resetMagnifyState?.();
+    }
+    if (this._worker) {
+      this._worker.postMessage({ type: 'magReset' });
+    }
   }
 
   setHlsInstance(hls) {
@@ -164,7 +224,18 @@ export class Pipeline {
     if (params.threshold !== undefined) this.params.threshold = params.threshold;
     if (params.trailLength !== undefined) this.params.trailLength = params.trailLength;
     if (params.channelSpread !== undefined) this.params.channelSpread = params.channelSpread;
-    if (params.algorithm !== undefined) this.params.algorithm = params.algorithm;
+    if (params.algorithm !== undefined && params.algorithm !== this.params.algorithm) {
+      const wasMagnify = this.params.algorithm === 'magnify';
+      this.params.algorithm = params.algorithm;
+      if (params.algorithm === 'magnify') {
+        this.resetMagnifyState();
+      } else if (wasMagnify) {
+        // Trails were not fed while magnifying; drop the stale ring
+        // instead of showing pre-magnify ghosts.
+        if (this._useWebGL && this._glRenderer) this._glRenderer.clearTrails();
+        if (this._worker) this._worker.postMessage({ type: 'clear' });
+      }
+    }
     if (params.blurEnabled !== undefined) this.params.blurEnabled = params.blurEnabled;
     if (params.ageColorEnabled !== undefined) this.params.ageColorEnabled = params.ageColorEnabled;
     if (params.rgbTintR !== undefined) this.params.rgbTintR = params.rgbTintR;
@@ -176,6 +247,46 @@ export class Pipeline {
       this.params.fpsCap = params.fpsCap;
       this.logProcessingConfig();
     }
+    if (params.magAmp !== undefined) this.params.magAmp = params.magAmp;
+    if (params.magFreqLow !== undefined) this.params.magFreqLow = params.magFreqLow;
+    if (params.magFreqHigh !== undefined) this.params.magFreqHigh = params.magFreqHigh;
+    if (params.magChroma !== undefined) this.params.magChroma = params.magChroma;
+    if (params.magDownsample !== undefined && params.magDownsample !== this.params.magDownsample) {
+      this.params.magDownsample = params.magDownsample;
+      this.resetMagnifyState();
+    }
+  }
+
+  /**
+   * Latest motion-energy grid for whichever render path is active, or null
+   * before the first processed frame. Asking for a size is also what turns the
+   * grid on: the worker path computes at the requested size from the next frame
+   * onward, and cols/rows below 1 switch the readback off entirely.
+   *
+   * @param {number} cols
+   * @param {number} rows
+   * @returns {Float32Array|null} cols*rows energies in 0..1, row-major
+   */
+  getEnergyGrid(cols, rows) {
+    const nextCols = Number.isFinite(cols) ? Math.floor(cols) : 0;
+    const nextRows = Number.isFinite(rows) ? Math.floor(rows) : 0;
+
+    if (nextCols !== this._energyCols || nextRows !== this._energyRows) {
+      this._energyCols = nextCols;
+      this._energyRows = nextRows;
+      this._energyGrid = null;
+    }
+
+    if (nextCols < 1 || nextRows < 1) return null;
+
+    if (this._useWebGL) {
+      if (!this._glRenderer || this._storeSize < 2) return null;
+      return this._glRenderer.readEnergyGrid(nextCols, nextRows);
+    }
+
+    // Worker results lag the request by a frame; ignore stale grid sizes.
+    if (this._energyGridCols !== nextCols || this._energyGridRows !== nextRows) return null;
+    return this._energyGrid;
   }
 
   setProcessingWidth(width) {
@@ -306,10 +417,30 @@ export class Pipeline {
    */
   process(video) {
     if (this._useWebGL) {
-      this._processWebGL(video);
+      if (this.params.algorithm === 'magnify') {
+        this._processMagnifyWebGL(video);
+      } else {
+        this._processWebGL(video);
+      }
     } else {
-      this._processWorker(video);
+      if (this.params.algorithm === 'magnify') {
+        this._processMagnifyWorker(video);
+      } else {
+        this._processWorker(video);
+      }
     }
+  }
+
+  /**
+   * Real frame interval for the magnify EMAs, measured between processed
+   * frames. Falls back to 30 fps on the first frame after a reset.
+   */
+  _magFrameDt(now) {
+    const dtMs = this._magLastTime > 0
+      ? Math.min(Math.max(now - this._magLastTime, 0.1), 1000)
+      : 1000 / 30;
+    this._magLastTime = now;
+    return dtMs;
   }
 
   // ── WebGL Path ──────────────────────────────────────────────
@@ -394,6 +525,92 @@ export class Pipeline {
     this._currentMode = mode;
   }
 
+  // ── Magnify: WebGL path ─────────────────────────────────────
+
+  _processMagnifyWebGL(video) {
+    const frame = this.captureFrame(video);
+    if (!frame) return;
+
+    // Keep the lookback store warm so switching back to Posy/Raw behaves.
+    this._storePush(frame);
+
+    const gl = this._glRenderer;
+    if (!gl.magnifySupported) {
+      // The UI disables the magnify option when unsupported; if we still
+      // get here, show a blank frame rather than rendering garbage.
+      gl.renderBlank(this.params.algorithm, false);
+      return;
+    }
+
+    const dtMs = this._magFrameDt(performance.now());
+    gl.uploadImageData(frame, 'current');
+    const ok = gl.renderMagnify({
+      alphaFast: emaAlpha(this.params.magFreqHigh, dtMs),
+      alphaSlow: emaAlpha(this.params.magFreqLow, dtMs),
+      amp: this.params.magAmp,
+      chroma: this.params.magChroma,
+      downsample: this.params.magDownsample,
+      blurEnabled: this.params.blurEnabled,
+    });
+    if (!ok) {
+      gl.renderBlank(this.params.algorithm, false);
+    }
+  }
+
+  // ── Magnify: Worker path (fallback) ─────────────────────────
+
+  /**
+   * Capture the current frame at the magnify processing size. The
+   * downsampling is the spatial pooling; the worker path is capped at
+   * 320 px wide (correctness over speed on the CPU fallback).
+   */
+  _captureMagnifyFrame(video) {
+    if (!this.width || !this.height) return null;
+    const ds = this.params.magDownsample || 1;
+    const w = Math.max(2, Math.min(320, Math.round(this.width / ds)));
+    const h = Math.max(2, Math.round(this.height * (w / this.width)));
+
+    if (!this._magCapCanvas) {
+      this._magCapCanvas = document.createElement('canvas');
+      this._magCapCtx = this._magCapCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    if (this._magCapCanvas.width !== w || this._magCapCanvas.height !== h) {
+      this._magCapCanvas.width = w;
+      this._magCapCanvas.height = h;
+    }
+
+    try {
+      this._magCapCtx.drawImage(video, 0, 0, w, h);
+      return this._magCapCtx.getImageData(0, 0, w, h);
+    } catch {
+      return null;
+    }
+  }
+
+  _processMagnifyWorker(video) {
+    const frame = this._captureMagnifyFrame(video);
+    if (!frame) return;
+
+    if (this._workerBusy) return;
+    this._workerBusy = true;
+
+    const dtMs = this._magFrameDt(performance.now());
+    const currentFrameBuffer = frame.data.buffer;
+
+    // Magnify needs no frame-store lookback — skip the store copies.
+    this._worker.postMessage({
+      type: 'process',
+      currentFrameBuffer,
+      frameStoreBuffers: [],
+      frameStoreSize: 0,
+      frameStoreHead: -1,
+      params: { ...this.params },
+      dtMs,
+      width: frame.width,
+      height: frame.height,
+    }, [currentFrameBuffer]);
+  }
+
   // ── Worker Path (fallback) ──────────────────────────────────
 
   _processWorker(video) {
@@ -429,6 +646,74 @@ export class Pipeline {
       params: { ...this.params },
       width: this.width,
       height: this.height,
+      energyCols: this._energyCols,
+      energyRows: this._energyRows,
     }, [currentFrameBuffer]);
   }
+}
+
+/**
+ * Dev-only parity probe for SPEC-sonification A6.
+ *
+ * Feeds the same two synthetic frames through the CPU core math and the WebGL
+ * readback and returns both grids so their cells can be compared. Only ever
+ * called behind `import.meta.env.DEV`, so production builds tree-shake it away.
+ *
+ * It resizes the renderer to the synthetic frame size and clears the pipeline
+ * afterwards — run it on an idle page, not mid-playback.
+ *
+ * @param {Pipeline} pipeline - A pipeline whose init() picked the WebGL path
+ * @param {number} [cols]
+ * @param {number} [rows]
+ * @returns {{cols: number, rows: number, core: number[], webgl: number[]}|null}
+ */
+export function debugEnergyParity(pipeline, cols = 8, rows = 4) {
+  const gl = pipeline?._glRenderer;
+  if (!gl) return null;
+
+  const width = 128;
+  const height = 64;
+  const prev = new Uint8ClampedArray(width * height * 4);
+  const next = new Uint8ClampedArray(width * height * 4);
+  const base = 96;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      prev[i] = prev[i + 1] = prev[i + 2] = base;
+      prev[i + 3] = 255;
+      // Only the second frame carries the wedge: motion grows to the right and
+      // is strongest at the top, so every cell lands on a different energy.
+      const wedge = Math.round((x / (width - 1)) * 120 * (1 - y / (height - 1)));
+      next[i] = next[i + 1] = next[i + 2] = base + wedge;
+      next[i + 3] = 255;
+    }
+  }
+
+  const diff = new Uint8ClampedArray(width * height * 4);
+  posyBlend(next, prev, diff, 0);
+  const core = cellEnergies(diff, width, height, cols, rows, true);
+
+  const restoreWidth = gl.width;
+  const restoreHeight = gl.height;
+  gl.setSize(width, height);
+  const prevImage = new ImageData(prev, width, height);
+  const nextImage = new ImageData(next, width, height);
+  gl.uploadImageData(nextImage, 'current');
+  gl.uploadImageData(prevImage, 'oldR');
+  gl.uploadImageData(prevImage, 'oldG');
+  gl.uploadImageData(prevImage, 'oldB');
+  gl.renderDiff({
+    threshold: 0,
+    algorithm: 'posy',
+    rgbTintR: '#ff0000',
+    rgbTintG: '#00ff00',
+    rgbTintB: '#0000ff',
+  });
+  const webgl = Array.from(gl.readEnergyGrid(cols, rows));
+
+  if (restoreWidth > 0 && restoreHeight > 0) gl.setSize(restoreWidth, restoreHeight);
+  pipeline.clearState();
+
+  return { cols, rows, core: Array.from(core), webgl };
 }
